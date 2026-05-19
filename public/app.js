@@ -98,6 +98,8 @@ document.addEventListener('click', async e=>{
   if(pasteId){ await pasteToInput(pasteId); }
   const copyVal=e.target && e.target.getAttribute && e.target.getAttribute('data-copy');
   if(copyVal!==null && copyVal!==undefined){ copyText(copyVal); }
+  const copySimId=e.target && e.target.getAttribute && e.target.getAttribute('data-copy-sim-id');
+  if(copySimId){ const el=document.querySelector('.sim-code[data-id="'+CSS.escape(copySimId)+'"]'); copyText(el?el.textContent:''); }
   const direct=e.target && e.target.getAttribute && e.target.getAttribute('data-send-tool');
   if(direct){ await sendNameToTool(direct,'user'); }
   if(e.target && e.target.id==='sendSelectedUserBtn'){

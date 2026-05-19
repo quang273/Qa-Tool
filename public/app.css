@@ -36,3 +36,11 @@
 .input-clear{background:#fff0f3;color:#ff4263;border:1px solid #ffd2db}
 .input-copy{background:#e8f1ff;color:#1764d8}.input-paste{background:#edf7ff;color:#0ea5e9}
 @media(max-width:380px){.input-action-row{grid-template-columns:36px 1fr 36px 36px;gap:5px}.input-clear,.input-copy,.input-paste{height:40px;border-radius:12px}}
+
+
+/* V29 SIM layout */
+.sim-phone-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;width:100%}
+.sim-inline-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.sim-inline-actions .mini-copy{height:40px;width:auto;padding:0 12px;font-size:13px}
+.sim-inline-actions .smallbtn{height:40px;min-height:40px;padding:7px 12px;font-size:13px}
+@media(max-width:560px){.sim-phone-row{align-items:flex-start}.sim-inline-actions{flex-direction:column;gap:6px}.sim-inline-actions .mini-copy,.sim-inline-actions .smallbtn{height:36px;min-height:36px;padding:6px 10px;font-size:12px}.sim-actions{grid-template-columns:1fr!important}}

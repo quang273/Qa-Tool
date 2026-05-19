@@ -25,14 +25,15 @@ app.use(express.static(pub));
 
 const files = {
   accounts: 'accounts.json', used: 'used-accounts.json', videos: 'videos.json', links: 'links.json',
-  settings: 'settings.json', user2fa: 'user2fa.json', sim: 'sim-otp-settings.json', logs: 'logs.json', iphoneQueue: 'iphone-tool-queue.json', domainSettings: 'domain-settings.json', domainSim: 'domain-sim-settings.json'
+  settings: 'settings.json', user2fa: 'user2fa.json', sim: 'sim-otp-settings.json', logs: 'logs.json', iphoneQueue: 'iphone-tool-queue.json', domainSettings: 'domain-settings.json', domainSim: 'domain-sim-settings.json', currentPicks: 'current-picks.json'
 };
 const defaults = {
   accounts: [], used: [], videos: [], links: [], user2fa: [], logs: [], iphoneQueue: [],
   settings: { mailMethod:'OAuth2', icloudEmail:'', icloudPassword:'', showVideos:true, showAccount:true, showEmail:true, showIcloud:true, zaloUrl:'https://auraesoftware.com/zalo.jpg', iphoneToolUrl:'http://127.0.0.1:5799/api/rename-device', passwordEnabled:false, accessPassword:'zx' },
   sim: { apiKey:'', service:'lf', country:'10', active: [] },
   domainSettings: {},
-  domainSim: {}
+  domainSim: {},
+  currentPicks: {}
 };
 function jpath(k){ return path.join(DATA_DIR, files[k]); }
 function read(k){ try { return JSON.parse(fs.readFileSync(jpath(k),'utf8')); } catch { return structuredClone(defaults[k]); } }
@@ -118,10 +119,18 @@ function classify(parts){
   if (emails.some(e => /hotmail|outlook|live|msn/i.test(e)) && parts.length >= 6) return 'hotmail-token';
   return 'normal';
 }
+function isLongTokenPart(p){ return String(p || '').length > 80; }
+function isUuidPart(p){ return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(p || '')); }
 function visibleParts(parts){
   const type = classify(parts);
-  if (type === 'hotmail-token') return parts.slice(0,5);
-  return parts.slice(0, Math.min(parts.length, 7));
+  if (type === 'hotmail-token') {
+    // Chỉ hiển thị phần đăng nhập: mã/user/handle/email/pass.
+    // Ẩn refresh token dài và clientId/UUID phía sau.
+    const tokenIndex = parts.findIndex(isLongTokenPart);
+    const safe = tokenIndex >= 0 ? parts.slice(0, tokenIndex) : parts.filter(p => !isUuidPart(p));
+    return safe.slice(0, Math.min(safe.length, 5));
+  }
+  return parts.filter(p => !isLongTokenPart(p) && !isUuidPart(p)).slice(0, Math.min(parts.length, 7));
 }
 function findEmail(parts){ return parts.find(p => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(p)); }
 function findToken(parts){ return parts.find(p => p.length > 80) || ''; }
@@ -184,9 +193,18 @@ function renderAccount(parts){
   const secret = get2faSecret(parts);
   const user2fa = (secret && parts[0]) ? `${parts[0]}|${secret}` : '';
   const otp = secret ? `<div class="otpbox"><div><b>OTP 2FA</b><small class="otp-remain">${remain()}s</small></div><div class="otpcode" data-secret="${esc(secret)}">${currentOtp(secret)}</div><button onclick="copyText(document.querySelector('.otpcode').textContent)">📋</button></div><button class="btn soft wide" type="button" data-send-tool="${esc(user2fa)}">🚀 Gửi USER|2FA sang iPhone Tool</button>` : '';
-  return `${hidden}${fields}<div id="toolSendResult"></div>${otp}<button class="btn primary wide" id="getCodeBtn">🔑 Get Code</button><div id="codeResult"></div>${btn('/Home/GetAccount','⬇️ Lấy tài khoản','soft')}${btn('/Home/MarkUsed?raw='+urlEnc(parts.join('|')),'👥 Yêu cầu kích điểm','soft')}`;
+  return `${hidden}${fields}<div id="toolSendResult"></div>${otp}<button class="btn primary wide" id="getCodeBtn">🔑 Get Code</button><div id="codeResult"></div>${btn('/Home/GetAccount','⬇️ Lấy tài khoản','soft')}${btn('/Home/MarkUsed','👥 Yêu cầu kích điểm','soft')}`;
 }
+function makePickId(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,10); }
 function getAccountFromQuery(req){
+  // Bản cũ từng đưa toàn bộ accountData lên URL, làm lộ token.
+  // Bản mới chỉ đưa accountId ngắn lên URL, dữ liệu đầy đủ nằm server-side để Get Code dùng.
+  if (req.query.accountId) {
+    const picks = read('currentPicks');
+    const item = picks[String(req.query.accountId)] || null;
+    return Array.isArray(item) ? item.map(String) : [];
+  }
+  // Hỗ trợ link cũ nếu còn đang mở tab cũ.
   let q = req.query.accountData;
   if (!q) return [];
   return Array.isArray(q) ? q.map(String) : [String(q)];
@@ -215,7 +233,14 @@ app.get('/Home/GetAccount', (req,res)=>{
   // Nhờ vậy lấy hết thì lần bấm tiếp theo sẽ báo không còn tài khoản, không đứng lại ở tài khoản cuối.
   write('accounts', accounts);
   const parts = splitAccountLine(pick);
-  res.redirect('/?' + accountQuery(parts));
+  const id = makePickId();
+  const picks = read('currentPicks');
+  picks[id] = parts;
+  // Giữ tối đa 100 tài khoản đang mở để file không phình to.
+  const keys = Object.keys(picks);
+  for (const k of keys.slice(0, Math.max(0, keys.length - 100))) delete picks[k];
+  write('currentPicks', picks);
+  res.redirect('/?accountId=' + urlEnc(id));
 });
 app.get('/Home/MarkUsed', (req,res)=>{ res.redirect('/'); });
 app.get('/Login', (req,res)=>{
@@ -791,13 +816,13 @@ app.get('/thue-otp-sim', async (req,res)=>{
   const showConfig = req.query.config === '1' || !s.apiKey;
   const currentService = serviceName(s.service, services);
   const currentCountry = countryLabel(s.country, countryName(s.country, countries), prices);
-  const activeHtml = active.length ? `<div class="list">${active.map(a=>`<div class="list-item sim-session"><div class="sim-main"><b>${esc(a.number)}</b><small class="muted">ID: ${esc(a.id)} • ${esc(serviceName(a.service, services))} • ${esc(countryLabel(a.country, countryName(a.country, countries), prices))}</small><div class="otpbox sim-otpbox"><div><small>OTP SMS</small><b class="sim-code" data-id="${esc(a.id)}">------</b></div><span class="sim-status" data-id="${esc(a.id)}">Đang chờ SMS...</span><button onclick="copyText(document.querySelector('.sim-code[data-id="${esc(a.id)}"]').textContent)">📋</button></div></div><div class="sim-actions"><button class="mini-copy" onclick="copyText('${esc(localPhoneNumber(a.number, a.country))}')">📋 Số</button><a class="btn soft smallbtn" href="/sim/complete/${urlEnc(a.id)}">Hoàn tất</a><a class="btn danger smallbtn" href="/sim/cancel/${urlEnc(a.id)}">Hủy</a></div></div>`).join('')}</div>` : '<div class="empty">Chưa có phiên thuê số nào.</div>';
+  const activeHtml = active.length ? `<div class="list">${active.map(a=>{ const localNum = localPhoneNumber(a.number, a.country); return `<div class="list-item sim-session"><div class="sim-main"><div class="sim-phone-row"><div><b>${esc(a.number)}</b><small class="muted">Số local: ${esc(localNum)}</small></div><div class="sim-inline-actions"><button class="mini-copy" type="button" data-copy="${esc(localNum)}">📋 Số</button><a class="btn danger smallbtn" href="/sim/cancel/${urlEnc(a.id)}">Hủy</a></div></div><small class="muted">ID: ${esc(a.id)} • ${esc(serviceName(a.service, services))} • ${esc(countryLabel(a.country, countryName(a.country, countries), prices))}</small><div class="otpbox sim-otpbox"><div><small>OTP SMS</small><b class="sim-code" data-id="${esc(a.id)}">------</b></div><span class="sim-status" data-id="${esc(a.id)}">Đang chờ SMS...</span><button type="button" data-copy-sim-id="${esc(a.id)}">📋</button></div></div><div class="sim-actions"><a class="btn soft smallbtn" href="/sim/complete/${urlEnc(a.id)}">Hoàn tất</a></div></div>`; }).join('')}</div>` : '<div class="empty">Chưa có phiên thuê số nào.</div>';
   const configForm = showConfig
     ? `<form method="post" action="/thue-otp-sim/settings"><label>API key GrizzlySMS</label><input name="apiKey" value="${esc(s.apiKey)}" placeholder="Nhập API key"><label>Dịch vụ</label>${simSelect('service', s.service, services)}<label>Quốc gia</label><input id="countrySearch" class="country-search" type="search" placeholder="Tìm quốc gia hoặc mã vùng, ví dụ: 84, 57, Vietnam, Colombia">${simSelect('country', s.country, countries, prices)}<button class="btn primary wide">💾 Lưu cấu hình</button><a class="btn soft wide" href="/thue-otp-sim">Ẩn cấu hình</a></form>`
     : `<div class="sim-config-summary"><div class="field"><label>Cấu hình hiện tại</label><div class="stat">${esc(currentService)}<br><small>${esc(currentCountry)}</small></div></div><a class="btn soft wide" href="/thue-otp-sim?config=1">⚙️ Cấu hình</a></div>`;
   const body = card('💰 Số dư GrizzlySMS', `<div class="big-result">${esc(balance)}</div>`)+
-    card('📱 Thuê OTP SIM', `${configForm}<form id="simGetForm" method="post" action="/sim/get-number"><button id="simGetBtn" class="btn primary wide">📲 Lấy số điện thoại</button><div id="simGetLoading" class="notice" style="display:none">⏳ Đang lấy số điện thoại...</div></form>`)+
-    card('⏳ Phiên đang chờ SMS', activeHtml);
+    card('⏳ Phiên đang chờ SMS', activeHtml)+
+    card('📱 Thuê OTP SIM', `<form id="simGetForm" method="post" action="/sim/get-number"><button id="simGetBtn" class="btn primary wide">📲 Lấy số điện thoại</button><div id="simGetLoading" class="notice" style="display:none">⏳ Đang lấy số điện thoại...</div></form>${configForm}`);
   res.send(layout('Thuê OTP SIM', body, 'sim'));
 });
 app.post('/thue-otp-sim/settings',(req,res)=>{
@@ -813,7 +838,7 @@ app.post('/sim/get-number', async (req,res)=>{
     const n=parseNumberResponse(t);
     if(n.ok){
       s.active = Array.isArray(s.active) ? s.active : [];
-      if(!s.active.some(x=>String(x.id)===String(n.id))) s.active.unshift({id:n.id, number:n.number, service:s.service, country:s.country, createdAt:new Date().toISOString()});
+      s.active = [{id:n.id, number:n.number, service:s.service, country:s.country, createdAt:new Date().toISOString()}];
       writeDomainSim(req,s);
       return res.redirect('/thue-otp-sim?rented=1');
     }

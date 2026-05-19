@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const { Pool } = require('pg');
 const { authenticator } = require('otplib');
 
 const app = express();
@@ -20,6 +21,14 @@ try {
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(pub, { recursive: true });
 
+const USE_SUPABASE = String(process.env.USE_SUPABASE || '').trim() === '1' && !!process.env.DATABASE_URL;
+let dbPool = null;
+let dbReady = false;
+const memoryStore = {};
+function deepClone(v){ return JSON.parse(JSON.stringify(v)); }
+function fileReadJson(fp, fallback){ try { return JSON.parse(fs.readFileSync(fp, 'utf8')); } catch { return deepClone(fallback); } }
+function fileWriteJson(fp, value){ fs.writeFileSync(fp, JSON.stringify(value, null, 2), 'utf8'); }
+
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 app.use(express.json({ limit: '5mb' }));
 app.use(express.static(pub));
@@ -37,9 +46,61 @@ const defaults = {
   currentPicks: {}
 };
 function jpath(k){ return path.join(DATA_DIR, files[k]); }
-function read(k){ try { return JSON.parse(fs.readFileSync(jpath(k),'utf8')); } catch { return structuredClone(defaults[k]); } }
-function write(k,v){ fs.writeFileSync(jpath(k), JSON.stringify(v,null,2), 'utf8'); }
-for (const k of Object.keys(files)) if (!fs.existsSync(jpath(k))) write(k, defaults[k]);
+function read(k){
+  if (Object.prototype.hasOwnProperty.call(memoryStore, k)) return deepClone(memoryStore[k]);
+  const value = fileReadJson(jpath(k), defaults[k]);
+  memoryStore[k] = deepClone(value);
+  return deepClone(value);
+}
+function saveToSupabase(k, v){
+  if (!USE_SUPABASE || !dbReady || !dbPool) return;
+  dbPool.query(
+    `insert into qf_store (store_key, value, updated_at) values ($1, $2::jsonb, now())
+     on conflict (store_key) do update set value = excluded.value, updated_at = now()`,
+    [k, JSON.stringify(v)]
+  ).catch(err => console.error('[Supabase] Save failed:', k, err.message));
+}
+function write(k,v){
+  memoryStore[k] = deepClone(v);
+  if (USE_SUPABASE && dbReady && dbPool) saveToSupabase(k, v);
+  else fileWriteJson(jpath(k), v);
+}
+for (const k of Object.keys(files)) {
+  if (!fs.existsSync(jpath(k))) fileWriteJson(jpath(k), defaults[k]);
+  memoryStore[k] = fileReadJson(jpath(k), defaults[k]);
+}
+async function initStorage(){
+  if (!USE_SUPABASE) {
+    console.log('[Storage] Using local JSON files in data/*.json');
+    return;
+  }
+  try {
+    dbPool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 5 });
+    await dbPool.query(`create table if not exists qf_store (
+      store_key text primary key,
+      value jsonb not null,
+      updated_at timestamptz not null default now()
+    )`);
+    for (const k of Object.keys(files)) {
+      const row = await dbPool.query('select value from qf_store where store_key=$1', [k]);
+      if (row.rows.length) {
+        memoryStore[k] = row.rows[0].value;
+      } else {
+        const initial = fileReadJson(jpath(k), defaults[k]);
+        memoryStore[k] = initial;
+        await dbPool.query(
+          'insert into qf_store (store_key, value, updated_at) values ($1, $2::jsonb, now()) on conflict (store_key) do nothing',
+          [k, JSON.stringify(initial)]
+        );
+      }
+    }
+    dbReady = true;
+    console.log('[Storage] Supabase enabled: qf_store ready');
+  } catch (err) {
+    dbReady = false;
+    console.error('[Storage] Supabase failed, falling back to local JSON:', err.message);
+  }
+}
 
 function cloneDefault(k){ return JSON.parse(JSON.stringify(defaults[k])); }
 function domainKey(req){
@@ -1163,4 +1224,6 @@ app.get('/sim/complete/:id', async (req,res)=>{
   res.redirect('/thue-otp-sim');
 });
 
-app.listen(PORT, ()=>console.log(`QuangFun chạy tại http://localhost:${PORT}`));
+initStorage().then(()=>{
+  app.listen(PORT, ()=>console.log(`QuangFun chạy tại http://localhost:${PORT}`));
+});

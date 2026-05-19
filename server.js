@@ -30,7 +30,7 @@ const files = {
 };
 const defaults = {
   accounts: [], used: [], videos: [], links: [], user2fa: [], logs: [], iphoneQueue: [],
-  settings: { mailMethod:'OAuth2', icloudEmail:'', icloudPassword:'', showVideos:true, showAccount:true, showEmail:true, showIcloud:true, zaloUrl:'/zalo.jpg', iphoneToolUrl:'http://127.0.0.1:5799/api/rename-device', passwordEnabled:false, accessPassword:'zx' },
+  settings: { mailMethod:'OAuth2', icloudEmail:'', icloudPassword:'', quickCopyText:'', withdrawEmailBase:'', showVideos:true, showAccount:true, showEmail:true, showIcloud:true, zaloUrl:'/zalo.jpg', iphoneToolUrl:'http://127.0.0.1:5799/api/rename-device', passwordEnabled:false, accessPassword:'zx' },
   sim: { apiKey:'', service:'lf', country:'10', active: [], activeByClient: {} },
   domainSettings: {},
   domainSim: {},
@@ -247,8 +247,16 @@ function videoTypeFromEnvKey(envKey){
   return 'tiktok60';
 }
 function uniqList(arr){ const seen=new Set(); const out=[]; for(const x of arr.map(normalizeVideoUrl).filter(Boolean)){ if(!seen.has(x)){ seen.add(x); out.push(x); } } return out; }
+
+function renderWithdrawalMail(settings){
+  const base = String(settings.withdrawEmailBase || '').trim();
+  const disabled = base ? '' : 'disabled';
+  const placeholder = base ? '' : 'Chưa cài mail rút tiền trong Cài đặt';
+  return `<div class="field withdraw-mail-box"><label>Mail rút tiền</label><div class="input-action-row"><button class="input-paste" type="button" id="refreshWithdrawMail" title="Random mail mới" ${disabled}>🔄</button><input id="withdrawMailInput" readonly data-base="${esc(base)}" placeholder="${placeholder}"><button class="input-copy" type="button" data-copy-input="withdrawMailInput" title="Copy mail rút tiền" ${disabled}>📋</button></div><small class="hint">Mỗi lần tải trang hoặc bấm 🔄 sẽ tạo mail mới từ mail gốc trong Cài đặt.</small></div>`;
+}
+
 function renderAccount(parts){
-  if (!parts.length) return `<div class="empty">Chưa có tài khoản nào được lấy.</div><div class="btn-grid">${btn('/Home/GetAccount','⬇️ Lấy tài khoản')}${btn('/Account/AddAccount','➕ Thêm tài khoản','soft')}</div>`;
+  if (!parts.length) return `<div class="empty">Chưa có tài khoản nào được lấy.</div><div class="btn-grid">${btn('/Home/GetAccount','⬇️ Lấy tài khoản')}</div>`;
   const type = classify(parts);
   const shown = visibleParts(parts);
   const fields = shown.map((p,i)=>`<div class="field"><label>Dữ liệu ${i+1}</label><div class="send-copy-row"><button class="mini-send" type="button" data-send-tool="${esc(p)}" title="Gửi dòng này sang iPhone Tool">🚀</button><input readonly value="${esc(p)}"><button class="mini-copy" onclick="copyValue(this)" title="Copy dòng này">📋</button></div></div>`).join('');
@@ -281,7 +289,7 @@ app.get('/', (req,res)=>{
   const installUrl = (!settings.zaloUrl || String(settings.zaloUrl).includes('auraesoftware.com/zalo.jpg')) ? '/zalo.jpg' : settings.zaloUrl;
   let body = `<div class="quick-grid"><a class="quick" href="${esc(installUrl)}" target="_blank">➕<span>Cài web mới</span></a><a class="quick" href="/Account/AddAccount">👤<span>Thêm tài khoản</span></a><a class="quick" href="/Settings">⚙️<span>Cài đặt</span></a><a class="quick danger" href="/Login/Logout">↪<span>Đăng xuất</span></a></div>`;
   if (req.query.noAccount === '1') body += `<div class="notice warn">⚠️ Không còn tài khoản mới để lấy. Hãy thêm tài khoản mới trong mục Thêm tài khoản.</div>`;
-  if (settings.showAccount) body += card('👤 Tài khoản', renderAccount(acc));
+  if (settings.showAccount) body += card('👤 Tài khoản', renderAccount(acc) + renderWithdrawalMail(settings));
   if (settings.showVideos) body += card('🎬 Xem video', `<div class="btn-grid">${btn('/Shortcut/TikTok60','▶ Video TikTok 60p')}${btn('/Shortcut/TikTok180','⏱️ Video TikTok 180p','soft')}${btn('/r/RandomTiktok10','▶ Video TikTok 10p','soft')}${btn('/Shortcut/TikTokLite60','▶ Video Lite 60p')}${btn('/Shortcut/TikTokLite180','⏱️ Video Lite 180p','soft')}${btn('/r/RandomTiktokLite10','▶ Video Lite 10p','soft')}${btn('/Video/AddVideo','➕ Thêm video','soft')}</div>`);
   if (settings.showEmail) body += card('✉️ Link nhanh', links.length ? `<div class="list">${links.slice(0,5).map(l=>`<a class="list-item" target="_blank" href="${esc(l)}">${esc(l)}</a>`).join('')}</div>${btn('/Link/AddLink','Thêm link','soft')}` : `<div class="empty">Chưa có link.</div>${btn('/Link/AddLink','Thêm link','soft')}`);
   if (settings.showIcloud) body += card('☁️ iCloud', `<div class="field"><label>Tài khoản iCloud</label><div class="copy-row"><input readonly value="${esc(settings.icloudEmail||'Chưa cài')}"><button onclick="copyValue(this)">📋</button></div></div><div class="field"><label>Mật khẩu iCloud</label><div class="copy-row"><input readonly value="${esc(settings.icloudPassword||'')}"><button onclick="copyValue(this)">📋</button></div></div>`);
@@ -368,22 +376,19 @@ app.post('/IphoneTool/SendName', async (req,res)=>{
   const mode = String(req.body.mode || 'user').trim();
   const slot = String(req.body.slot || req.query.slot || '').trim();
   if (!name) return res.json({status:false, message:'Tên gửi sang iPhone Tool đang trống.'});
-  const s = domainSettings(req);
+
+  // Khi web chạy trên Render/domain thật, trình duyệt iPhone không thể gọi trực tiếp
+  // http://127.0.0.1 trên máy tính đang chạy iPhone Tool. Vì vậy gửi lệnh vào hàng chờ
+  // để iPhone Tool trên PC tự poll /IphoneTool/PopQueue và đổi tên.
   const payload = { name, mode, slot, createdAt: new Date().toISOString() };
-  try {
-    const r = await fetch(s.iphoneToolUrl || 'http://127.0.0.1:5799/api/rename-device', {
-      method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(payload), signal: AbortSignal.timeout(2500)
-    });
-    let data = {};
-    try { data = await r.json(); } catch { data = { message: await r.text() }; }
-    if (r.ok && data.status !== false) return res.json({status:true, message:data.message || `Đã gửi sang iPhone Tool: ${name}`});
-    throw new Error(data.message || 'Tool trả lỗi');
-  } catch(e) {
-    const q = read('iphoneQueue');
-    q.push(payload);
-    write('iphoneQueue', q.slice(-200));
-    return res.json({status:false, queued:true, message:`Chưa kết nối được iPhone Tool nên đã lưu vào hàng chờ. Tên: ${name}`});
-  }
+  const q = read('iphoneQueue');
+  q.push(payload);
+  write('iphoneQueue', q.slice(-200));
+  return res.json({
+    status:true,
+    queued:true,
+    message:`Đã gửi lệnh đổi tên vào iPhone Tool. Tên: ${name}`
+  });
 });
 app.get('/IphoneTool/Queue',(req,res)=>res.json(read('iphoneQueue')));
 app.post('/IphoneTool/PopQueue',(req,res)=>{ const q=read('iphoneQueue'); const item=q.shift()||null; write('iphoneQueue',q); res.json({status:true,item}); });
@@ -393,6 +398,7 @@ app.get('/Settings', (req,res)=>{
  const body = `<div class="quick-grid"><a class="quick" href="/Video/AddVideo">🎬<span>Thêm Video</span></a><a class="quick" href="/Link/AddLink">🔗<span>Thêm Link</span></a><a class="quick" href="/Account/AddAccount">👤<span>Thêm Tài khoản</span></a><a class="quick" href="/otp">🔐<span>User | 2FA</span></a><a class="quick" href="/thue-otp-sim">📱<span>Thuê OTP SIM</span></a></div>`+
  card('📬 Cài đặt đọc mail', `<form method="post" action="/Settings/mail"><label>Phương thức đọc mail</label><select name="mailMethod"><option ${s.mailMethod==='OAuth2'?'selected':''}>OAuth2</option><option ${s.mailMethod==='Graph API'?'selected':''}>Graph API</option><option ${s.mailMethod==='Mail TM'?'selected':''}>Mail TM</option><option ${s.mailMethod==='FakeEmail'?'selected':''}>FakeEmail</option></select><button class="btn primary wide">💾 Lưu cài đặt Mail</button></form>`)+
  card('📲 Kết nối iPhone Tool', `<form method="post" action="/Settings/iphone-tool"><label>Địa chỉ nhận lệnh của iPhone Tool</label><input name="iphoneToolUrl" value="${esc(s.iphoneToolUrl || 'http://127.0.0.1:5799/api/rename-device')}"><small class="muted">Mặc định dùng tool chạy trên máy tính. Nếu tool chưa mở, web sẽ lưu vào hàng chờ.</small><button class="btn primary wide">💾 Lưu kết nối Tool</button></form>`)+
+ card('⚡ Copy nhanh / Mail rút tiền', `<form method="post" action="/Settings/quick-copy"><label>Nội dung copy nhanh trong User | 2FA</label><textarea name="quickCopyText" rows="3" placeholder="Nhập bất kỳ nội dung nào cần copy nhanh">${esc(s.quickCopyText||'')}</textarea><label>Mail rút tiền gốc</label><input name="withdrawEmailBase" value="${esc(s.withdrawEmailBase||'')}" placeholder="zxcvb@gmail.com"><small class="muted">Ví dụ zxcvb@gmail.com sẽ random dạng z.xcvb+tiktoktool001@gmail.com.</small><button class="btn primary wide">💾 Lưu copy nhanh / mail rút tiền</button></form>`)+
  card('🔒 Bảo vệ bằng mật khẩu', `<form method="post" action="/Settings/security"><label class="switch"><span>Bật bảo vệ bằng mật khẩu</span><input type="checkbox" name="passwordEnabled" ${s.passwordEnabled?'checked':''}></label><label>Mật khẩu</label><input type="password" name="accessPassword" placeholder="Nhập mật khẩu mới (để trống để giữ nguyên)"><small class="muted">Mật khẩu hiện tại: ${esc(s.accessPassword || 'zx')}</small><button class="btn primary wide">💾 Lưu cài đặt bảo vệ</button></form>`)+
  card('☁️ Cài đặt iCloud', `<form method="post" action="/Settings/icloud"><label>Tài khoản iCloud</label><div class="copy-row"><input name="icloudEmail" value="${esc(s.icloudEmail)}"><button type="button" onclick="copyValue(this)">📋</button></div><label>Mật khẩu iCloud</label><div class="copy-row"><input name="icloudPassword" value="${esc(s.icloudPassword)}"><button type="button" onclick="copyValue(this)">📋</button></div><button class="btn primary wide">💾 Lưu thông tin iCloud</button></form>`)+
  card('👁️ Cài đặt hiển thị', `<form method="post" action="/Settings/display">${[['showVideos','Danh sách Video'],['showAccount','Thông tin Tài khoản'],['showEmail','Email/Link nhanh'],['showIcloud','Thông tin iCloud']].map(([k,l])=>`<label class="switch"><span>${l}</span><input type="checkbox" name="${k}" ${s[k]?'checked':''}></label>`).join('')}<button class="btn primary wide">💾 Lưu cài đặt hiển thị</button></form>`);
@@ -400,6 +406,7 @@ app.get('/Settings', (req,res)=>{
 });
 app.post('/Settings/mail',(req,res)=>{ const s=domainSettings(req); s.mailMethod=req.body.mailMethod||s.mailMethod; writeDomainSettings(req,s); res.redirect('/Settings'); });
 app.post('/Settings/iphone-tool',(req,res)=>{ const s=domainSettings(req); s.iphoneToolUrl=req.body.iphoneToolUrl||'http://127.0.0.1:5799/api/rename-device'; writeDomainSettings(req,s); res.redirect('/Settings'); });
+app.post('/Settings/quick-copy',(req,res)=>{ const s=domainSettings(req); s.quickCopyText=String(req.body.quickCopyText||''); s.withdrawEmailBase=String(req.body.withdrawEmailBase||'').replace(/\s+/g,'').trim(); writeDomainSettings(req,s); res.redirect('/Settings'); });
 app.post('/Settings/security',(req,res)=>{ const s=domainSettings(req); s.passwordEnabled=!!req.body.passwordEnabled; const pw=String(req.body.accessPassword||'').trim(); if(pw) s.accessPassword=pw; if(!s.accessPassword) s.accessPassword='zx'; writeDomainSettings(req,s); if(!s.passwordEnabled){ res.setHeader('Set-Cookie','qf_auth=; Path=/; Max-Age=0; SameSite=Lax'); } res.redirect('/Settings'); });
 app.post('/Settings/icloud',(req,res)=>{ const s=domainSettings(req); s.icloudEmail=req.body.icloudEmail||''; s.icloudPassword=req.body.icloudPassword||''; writeDomainSettings(req,s); res.redirect('/Settings'); });
 app.post('/Settings/display',(req,res)=>{ const s=domainSettings(req); ['showVideos','showAccount','showEmail','showIcloud'].forEach(k=>s[k]=!!req.body[k]); writeDomainSettings(req,s); res.redirect('/Settings'); });
@@ -715,7 +722,7 @@ app.post('/Link/AddLink',(req,res)=>{ const links=read('links'); const l=String(
 app.get('/Link/Delete/:i',(req,res)=>{ const l=read('links'); l.splice(Number(req.params.i),1); write('links',l); res.redirect('/Link/AddLink'); });
 app.get('/Link/Clear',(req,res)=>{ write('links',[]); res.redirect('/Link/AddLink'); });
 
-app.get('/otp',(req,res)=>{ const list=read('user2fa'); const body=card('🔐 User | 2FA', `<form method="post"><label>Nhập nhanh user|2FA</label><div class="input-action-row"><button class="input-clear" type="button" data-clear-input="u2faCombined" title="Xóa dòng nhập nhanh">✕</button><input id="u2faCombined" name="combined" placeholder="karissapaul0|3RFA... hoặc karissapaul0 3RFA..."><button class="input-paste" type="button" data-paste-input="u2faCombined" title="Dán vào dòng nhập nhanh">📥</button><button class="input-copy" type="button" data-copy-input="u2faCombined" title="Copy dòng nhập nhanh">📋</button></div><small class="hint">Dán định dạng user|2FA hoặc user 2FA, hệ thống tự tách xuống 2 dòng bên dưới.</small><label>User</label><div class="input-action-row"><button class="input-clear" type="button" data-clear-input="u2faUser" title="Xóa User">✕</button><input id="u2faUser" name="user" placeholder="username"><button class="input-paste" type="button" data-paste-input="u2faUser" title="Dán User">📥</button><button class="input-copy" type="button" data-copy-input="u2faUser" title="Copy User">📋</button></div><label>Secret 2FA</label><div class="input-action-row"><button class="input-clear" type="button" data-clear-input="u2faSecret" title="Xóa Secret 2FA">✕</button><input id="u2faSecret" name="secret" placeholder="JBSWY3DPEHPK3PXP"><button class="input-paste" type="button" data-paste-input="u2faSecret" title="Dán Secret 2FA">📥</button><button class="input-copy" type="button" data-copy-input="u2faSecret" title="Copy Secret 2FA">📋</button></div><div class="otpbox"><div><b>Mã 2FA</b><small class="otp-remain">${remain()}s</small></div><div class="otpcode" id="u2faLiveOtp">------</div><button type="button" onclick="copyText(document.getElementById('u2faLiveOtp').textContent)">📋</button></div><div class="btn-grid"><button class="btn primary" type="submit">💾 Lưu user|2FA</button><button class="btn soft" type="button" id="sendUser2faNow">🚀 Gửi USER|2FA</button><button class="btn soft" type="button" id="sendUserOnlyNow">👤 Gửi USER</button></div><div id="toolSendResult"></div></form>`)+card('📋 Danh sách', `<div class="btn-grid"><a class="btn soft" href="/otp/export">📤 Xuất TXT</a></div><div class="list">${list.map((x,i)=>{ const row = x.user+'|'+x.secret; return `<div class="list-item compact"><a class="row-remove" href="/otp/delete/${i}" title="Xóa dòng này">✕</a><div class="row-value">${esc(x.user)} | ${esc(x.secret)}</div><div class="row-actions"><button class="row-send" type="button" data-send-tool="${esc(row)}" title="Gửi USER|2FA">🚀</button><button class="row-copy" type="button" data-copy="${esc(row)}" title="Copy dòng này">📋</button></div></div>`; }).join('')||'<div class="empty">Chưa có dữ liệu.</div>'}</div>`); res.send(layout('User | 2FA',body,'otp')); });
+app.get('/otp',(req,res)=>{ const list=read('user2fa'); const s=domainSettings(req); const quickCopyHtml = `<div class="field quick-copy-box"><label>Copy nhanh</label><div class="input-action-row"><input id="quickCopyText" readonly value="${esc(s.quickCopyText||'')}" placeholder="Chưa cài nội dung copy nhanh"><button class="input-copy" type="button" data-copy-input="quickCopyText" title="Copy nhanh">📋</button></div></div>`; const body=card('🔐 User | 2FA', quickCopyHtml + `<form method="post"><label>Nhập nhanh user|2FA</label><div class="input-action-row"><button class="input-clear" type="button" data-clear-input="u2faCombined" title="Xóa dòng nhập nhanh">✕</button><input id="u2faCombined" name="combined" placeholder="karissapaul0|3RFA... hoặc karissapaul0 3RFA..."><button class="input-paste" type="button" data-paste-input="u2faCombined" title="Dán vào dòng nhập nhanh">📥</button><button class="input-copy" type="button" data-copy-input="u2faCombined" title="Copy dòng nhập nhanh">📋</button></div><small class="hint">Dán định dạng user|2FA hoặc user 2FA, hệ thống tự tách xuống 2 dòng bên dưới.</small><label>User</label><div class="input-action-row"><button class="input-clear" type="button" data-clear-input="u2faUser" title="Xóa User">✕</button><input id="u2faUser" name="user" placeholder="username"><button class="input-paste" type="button" data-paste-input="u2faUser" title="Dán User">📥</button><button class="input-copy" type="button" data-copy-input="u2faUser" title="Copy User">📋</button></div><label>Secret 2FA</label><div class="input-action-row"><button class="input-clear" type="button" data-clear-input="u2faSecret" title="Xóa Secret 2FA">✕</button><input id="u2faSecret" name="secret" placeholder="JBSWY3DPEHPK3PXP"><button class="input-paste" type="button" data-paste-input="u2faSecret" title="Dán Secret 2FA">📥</button><button class="input-copy" type="button" data-copy-input="u2faSecret" title="Copy Secret 2FA">📋</button></div><div class="otpbox"><div><b>Mã 2FA</b><small class="otp-remain">${remain()}s</small></div><div class="otpcode" id="u2faLiveOtp">------</div><button type="button" onclick="copyText(document.getElementById('u2faLiveOtp').textContent)">📋</button></div><div class="btn-grid"><button class="btn primary" type="submit">💾 Lưu user|2FA</button><button class="btn soft" type="button" id="sendUser2faNow">🚀 Gửi USER|2FA</button><button class="btn soft" type="button" id="sendUserOnlyNow">👤 Gửi USER</button></div><div id="toolSendResult"></div></form>`)+card('📋 Danh sách', `<div class="btn-grid"><a class="btn soft" href="/otp/export">📤 Xuất TXT</a></div><div class="list">${list.map((x,i)=>{ const row = x.user+'|'+x.secret; return `<div class="list-item compact"><a class="row-remove" href="/otp/delete/${i}" title="Xóa dòng này">✕</a><div class="row-value">${esc(x.user)} | ${esc(x.secret)}</div><div class="row-actions"><button class="row-send" type="button" data-send-tool="${esc(row)}" title="Gửi USER|2FA">🚀</button><button class="row-copy" type="button" data-copy="${esc(row)}" title="Copy dòng này">📋</button></div></div>`; }).join('')||'<div class="empty">Chưa có dữ liệu.</div>'}</div>`); res.send(layout('User | 2FA',body,'otp')); });
 app.post('/otp',(req,res)=>{ const list=read('user2fa'); let user=String(req.body.user||'').trim(); let secret=String(req.body.secret||'').trim(); const combined=String(req.body.combined||'').trim(); if(combined){ const parsed=parseUser2faLoose(combined); if(!user && parsed.user) user=parsed.user; if(!secret && parsed.secret) secret=parsed.secret; } if(user && secret){ secret=String(secret).replace(/\s/g,'').toUpperCase(); list.push({user, secret}); } write('user2fa',list); res.redirect('/otp'); });
 app.get('/otp/export',(req,res)=>{ const list=read('user2fa'); const txt=list.map(x=>`${x.user}|${x.secret}`).join('\n'); res.setHeader('Content-Type','text/plain; charset=utf-8'); res.setHeader('Content-Disposition','attachment; filename="user-2fa.txt"'); res.send(txt); });
 app.get('/otp/delete/:i',(req,res)=>{ const l=read('user2fa'); l.splice(Number(req.params.i),1); write('user2fa',l); res.redirect('/otp'); });

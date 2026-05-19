@@ -97,7 +97,7 @@ async function sendNameToTool(name, mode){
   try{
     const d=await postJson('/IphoneTool/SendName',{name,mode:mode||'user'});
     if(box) box.innerHTML='<div class="notice '+(d.status?'ok':'warn')+'">'+(d.message||'Đã gửi')+'</div>';
-    toast(d.status?'Đã gửi sang Tool':'Đã lưu hàng chờ');
+    toast(d.status?(d.queued?'Đã gửi lệnh đổi tên':'Đã gửi sang Tool'):'Đã lưu hàng chờ');
   }catch(e){
     if(box) box.innerHTML='<div class="notice warn">Không gửi được: '+e.message+'</div>';
   }
@@ -210,3 +210,24 @@ document.addEventListener('DOMContentLoaded',()=>{
     el.textContent=h || 'Localhost';
   }
 });
+
+
+function makeWithdrawMail(base){
+  base=String(base||'').replace(/\s+/g,'').trim();
+  const m=base.match(/^([^@]+)@([^@]+\.[^@]+)$/);
+  if(!m) return '';
+  let local=m[1].replace(/\./g,'');
+  const domain=m[2].toLowerCase();
+  if(!local) return '';
+  const dotted = local.length>1 ? local[0]+'.'+local.slice(1) : local;
+  const n = String(Math.floor(Math.random()*999)+1).padStart(3,'0');
+  return dotted + '+tiktoktool' + n + '@' + domain;
+}
+function refreshWithdrawMail(){
+  const el=document.getElementById('withdrawMailInput');
+  if(!el) return;
+  const v=makeWithdrawMail(el.dataset.base||'');
+  if(v) el.value=v;
+}
+document.addEventListener('DOMContentLoaded',()=>{ refreshWithdrawMail(); });
+document.addEventListener('click',e=>{ if(e.target && e.target.id==='refreshWithdrawMail'){ refreshWithdrawMail(); toast('Đã random mail mới'); } });

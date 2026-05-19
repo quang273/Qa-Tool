@@ -113,7 +113,9 @@ document.addEventListener('click', async e=>{
   const copyVal=e.target && e.target.getAttribute && e.target.getAttribute('data-copy');
   if(copyVal!==null && copyVal!==undefined){ copyText(copyVal); }
   const copySimId=e.target && e.target.getAttribute && e.target.getAttribute('data-copy-sim-id');
-  if(copySimId){ const el=document.querySelector('.sim-code[data-id="'+CSS.escape(copySimId)+'"]'); copyText(el?el.textContent:''); }
+  if(copySimId){ const el=document.querySelector('.sim-code[data-id="'+CSS.escape(copySimId)+'"]'); const v=(el?el.textContent:'').trim(); if(!v || v==='------'){toast('Chưa có OTP để copy');}else copyText(v); }
+  const checkSimId=e.target && e.target.getAttribute && e.target.getAttribute('data-check-sim-id');
+  if(checkSimId){ await pollSim(checkSimId); }
   const direct=e.target && e.target.getAttribute && e.target.getAttribute('data-send-tool');
   if(direct){ await sendNameToTool(direct,'user'); }
   if(e.target && e.target.id==='sendSelectedUserBtn'){
@@ -134,30 +136,32 @@ document.addEventListener('click', async e=>{
 
 });
 
-async function pollSim(){
-  const items=[...document.querySelectorAll('.sim-status[data-id]')];
+async function pollSim(onlyId){
+  const items=[...document.querySelectorAll('.sim-status[data-id]')].filter(x=>!onlyId || String(x.dataset.id)===String(onlyId));
   for(const el of items){
     try{
       const id=el.dataset.id;
+      el.textContent='Đang kiểm tra OTP...';
       const r=await fetch('/api/sim/status/'+encodeURIComponent(id));
       const d=await r.json();
-      if(!d.status){el.textContent=d.message||'Lỗi kiểm tra OTP'; continue;}
+      if(!d.status){el.textContent=d.message||'Lỗi kiểm tra OTP'; el.classList.add('warn'); continue;}
       const codeEl=document.querySelector('.sim-code[data-id="'+CSS.escape(id)+'"]');
+      const rawTxt=d.raw?(' • '+d.raw):'';
+      const timeTxt=d.checkedAt?(' • '+d.checkedAt):'';
       if(d.code){
         if(codeEl) codeEl.textContent=d.code;
-        el.textContent='Đã nhận OTP';
+        el.textContent=(d.message||'Đã nhận OTP')+timeTxt;
         el.classList.add('ok');
         if(!el.dataset.doneToast){ toast('Đã nhận OTP SIM: '+d.code); el.dataset.doneToast='1'; }
-      }else if(d.status==='wait'){
-        if(codeEl && codeEl.textContent==='') codeEl.textContent='------';
-        el.textContent='Đang chờ SMS...';
       }else{
-        el.textContent=d.raw||'Đang kiểm tra...';
+        if(codeEl && !codeEl.textContent.trim()) codeEl.textContent='------';
+        el.textContent=(d.message||d.raw||'Đang chờ SMS')+rawTxt+timeTxt;
+        if(d.status==='error'||d.status==='cancel') el.classList.add('warn');
       }
     }catch(e){el.textContent='Lỗi: '+e.message;}
   }
 }
-setInterval(pollSim,5000);pollSim();
+setInterval(()=>pollSim(),5000);pollSim();
 
 
 document.addEventListener('submit', e=>{

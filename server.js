@@ -219,6 +219,34 @@ function layout(title, body, active='home'){
 function card(title, content, extra=''){ return `<section class="card ${extra}"><h2>${title}</h2>${content}</section>`; }
 function btn(href, text, cls='primary'){ return `<a class="btn ${cls}" href="${href}">${text}</a>`; }
 
+
+const VIDEO_TYPES = {
+  tiktok60: { label:'TikTok thường 60p', env:'TIKTOK_60_SOURCE_URL' },
+  tiktok180: { label:'TikTok thường 180p', env:'TIKTOK_180_SOURCE_URL' },
+  tiktok10: { label:'TikTok thường 10p', env:'TIKTOK_10_SOURCE_URL' },
+  lite60: { label:'TikTok Lite 60p', env:'TIKTOK_LITE_60_SOURCE_URL' },
+  lite180: { label:'TikTok Lite 180p', env:'TIKTOK_LITE_180_SOURCE_URL' },
+  lite10: { label:'TikTok Lite 10p', env:'TIKTOK_LITE_10_SOURCE_URL' }
+};
+function normalizeVideoStore(raw){
+  const out = { tiktok60:[], tiktok180:[], tiktok10:[], lite60:[], lite180:[], lite10:[] };
+  if (Array.isArray(raw)) { out.tiktok60 = raw.map(String).filter(Boolean); return out; }
+  if (raw && typeof raw === 'object') {
+    for (const k of Object.keys(out)) out[k] = Array.isArray(raw[k]) ? raw[k].map(String).filter(Boolean) : [];
+  }
+  return out;
+}
+function readVideoStore(){ return normalizeVideoStore(read('videos')); }
+function writeVideoStore(store){ write('videos', normalizeVideoStore(store)); }
+function videoTypeFromEnvKey(envKey){
+  if (/LITE/i.test(envKey) && /10/i.test(envKey)) return 'lite10';
+  if (/LITE/i.test(envKey) && /180/i.test(envKey)) return 'lite180';
+  if (/LITE/i.test(envKey)) return 'lite60';
+  if (/10/i.test(envKey)) return 'tiktok10';
+  if (/180/i.test(envKey)) return 'tiktok180';
+  return 'tiktok60';
+}
+function uniqList(arr){ const seen=new Set(); const out=[]; for(const x of arr.map(normalizeVideoUrl).filter(Boolean)){ if(!seen.has(x)){ seen.add(x); out.push(x); } } return out; }
 function renderAccount(parts){
   if (!parts.length) return `<div class="empty">Chưa có tài khoản nào được lấy.</div><div class="btn-grid">${btn('/Home/GetAccount','⬇️ Lấy tài khoản')}${btn('/Account/AddAccount','➕ Thêm tài khoản','soft')}</div>`;
   const type = classify(parts);
@@ -252,10 +280,9 @@ app.get('/', (req,res)=>{
   const links = read('links');
   const installUrl = (!settings.zaloUrl || String(settings.zaloUrl).includes('auraesoftware.com/zalo.jpg')) ? '/zalo.jpg' : settings.zaloUrl;
   let body = `<div class="quick-grid"><a class="quick" href="${esc(installUrl)}" target="_blank">➕<span>Cài web mới</span></a><a class="quick" href="/Account/AddAccount">👤<span>Thêm tài khoản</span></a><a class="quick" href="/Settings">⚙️<span>Cài đặt</span></a><a class="quick danger" href="/Login/Logout">↪<span>Đăng xuất</span></a></div>`;
-  if (req.query.saved === 'account') body += `<div class="notice ok">✅ Đã lưu tài khoản. Bấm <b>Lấy tài khoản</b> để lấy ra dùng.</div>`;
   if (req.query.noAccount === '1') body += `<div class="notice warn">⚠️ Không còn tài khoản mới để lấy. Hãy thêm tài khoản mới trong mục Thêm tài khoản.</div>`;
   if (settings.showAccount) body += card('👤 Tài khoản', renderAccount(acc));
-  if (settings.showVideos) body += card('🎬 Xem video', `<div class="btn-grid">${btn('/Shortcut/TikTok60','▶ Video TikTok 60p')}${btn('/Shortcut/TikTok180','⏱️ Video TikTok 180p','soft')}${btn('/r/RandomTiktok10','▶ Video TikTok 10p','soft')}${btn('/Shortcut/TikTokLite60','▶ Video Lite 60p')}${btn('/Shortcut/TikTokLite180','⏱️ Video Lite 180p','soft')}${btn('/r/RandomTiktokLite10','▶ Video Lite 10p','soft')}${btn('/Video/AddVideo','➕ Thêm video','soft')}</div><small class="muted">API video dùng danh sách tích hợp hoặc nguồn ẩn trên server.</small>`);
+  if (settings.showVideos) body += card('🎬 Xem video', `<div class="btn-grid">${btn('/Shortcut/TikTok60','▶ Video TikTok 60p')}${btn('/Shortcut/TikTok180','⏱️ Video TikTok 180p','soft')}${btn('/r/RandomTiktok10','▶ Video TikTok 10p','soft')}${btn('/Shortcut/TikTokLite60','▶ Video Lite 60p')}${btn('/Shortcut/TikTokLite180','⏱️ Video Lite 180p','soft')}${btn('/r/RandomTiktokLite10','▶ Video Lite 10p','soft')}${btn('/Video/AddVideo','➕ Thêm video','soft')}</div>`);
   if (settings.showEmail) body += card('✉️ Link nhanh', links.length ? `<div class="list">${links.slice(0,5).map(l=>`<a class="list-item" target="_blank" href="${esc(l)}">${esc(l)}</a>`).join('')}</div>${btn('/Link/AddLink','Thêm link','soft')}` : `<div class="empty">Chưa có link.</div>${btn('/Link/AddLink','Thêm link','soft')}`);
   if (settings.showIcloud) body += card('☁️ iCloud', `<div class="field"><label>Tài khoản iCloud</label><div class="copy-row"><input readonly value="${esc(settings.icloudEmail||'Chưa cài')}"><button onclick="copyValue(this)">📋</button></div></div><div class="field"><label>Mật khẩu iCloud</label><div class="copy-row"><input readonly value="${esc(settings.icloudPassword||'')}"><button onclick="copyValue(this)">📋</button></div></div>`);
   res.send(layout('Trang chủ', body, 'home'));
@@ -367,7 +394,7 @@ app.get('/Settings', (req,res)=>{
  card('📬 Cài đặt đọc mail', `<form method="post" action="/Settings/mail"><label>Phương thức đọc mail</label><select name="mailMethod"><option ${s.mailMethod==='OAuth2'?'selected':''}>OAuth2</option><option ${s.mailMethod==='Graph API'?'selected':''}>Graph API</option><option ${s.mailMethod==='Mail TM'?'selected':''}>Mail TM</option><option ${s.mailMethod==='FakeEmail'?'selected':''}>FakeEmail</option></select><button class="btn primary wide">💾 Lưu cài đặt Mail</button></form>`)+
  card('📲 Kết nối iPhone Tool', `<form method="post" action="/Settings/iphone-tool"><label>Địa chỉ nhận lệnh của iPhone Tool</label><input name="iphoneToolUrl" value="${esc(s.iphoneToolUrl || 'http://127.0.0.1:5799/api/rename-device')}"><small class="muted">Mặc định dùng tool chạy trên máy tính. Nếu tool chưa mở, web sẽ lưu vào hàng chờ.</small><button class="btn primary wide">💾 Lưu kết nối Tool</button></form>`)+
  card('🔒 Bảo vệ bằng mật khẩu', `<form method="post" action="/Settings/security"><label class="switch"><span>Bật bảo vệ bằng mật khẩu</span><input type="checkbox" name="passwordEnabled" ${s.passwordEnabled?'checked':''}></label><label>Mật khẩu</label><input type="password" name="accessPassword" placeholder="Nhập mật khẩu mới (để trống để giữ nguyên)"><small class="muted">Mật khẩu hiện tại: ${esc(s.accessPassword || 'zx')}</small><button class="btn primary wide">💾 Lưu cài đặt bảo vệ</button></form>`)+
- card('☁️ Cài đặt iCloud', `<form method="post" action="/Settings/icloud"><label>Tài khoản iCloud</label><input name="icloudEmail" value="${esc(s.icloudEmail)}"><label>Mật khẩu iCloud</label><input name="icloudPassword" value="${esc(s.icloudPassword)}"><button class="btn primary wide">💾 Lưu thông tin iCloud</button></form>`)+
+ card('☁️ Cài đặt iCloud', `<form method="post" action="/Settings/icloud"><label>Tài khoản iCloud</label><div class="copy-row"><input name="icloudEmail" value="${esc(s.icloudEmail)}"><button type="button" onclick="copyValue(this)">📋</button></div><label>Mật khẩu iCloud</label><div class="copy-row"><input name="icloudPassword" value="${esc(s.icloudPassword)}"><button type="button" onclick="copyValue(this)">📋</button></div><button class="btn primary wide">💾 Lưu thông tin iCloud</button></form>`)+
  card('👁️ Cài đặt hiển thị', `<form method="post" action="/Settings/display">${[['showVideos','Danh sách Video'],['showAccount','Thông tin Tài khoản'],['showEmail','Email/Link nhanh'],['showIcloud','Thông tin iCloud']].map(([k,l])=>`<label class="switch"><span>${l}</span><input type="checkbox" name="${k}" ${s[k]?'checked':''}></label>`).join('')}<button class="btn primary wide">💾 Lưu cài đặt hiển thị</button></form>`);
  res.send(layout('Cài đặt hệ thống', body, 'settings'));
 });
@@ -451,9 +478,31 @@ app.get('/Auto/TikTokLite180',(req,res)=>autoAndroidPage(req,res,'TikTok Lite 18
 app.get('/Auto/TikTok60',(req,res)=>autoAndroidPage(req,res,'TikTok 60p tự mở mỗi 60 phút','/api/RandomTiktok60',3600));
 app.get('/Auto/TikTokLite60',(req,res)=>autoAndroidPage(req,res,'TikTok Lite 60p tự mở mỗi 60 phút','/api/RandomTiktokLite60',3600));
 
-app.get('/Video/AddVideo',(req,res)=>{ const videos=read('videos'); const body=card('🎬 Thêm nhiều video', `<form method="post"><label>Danh sách link, mỗi link 1 dòng</label><textarea name="videos" rows="7" placeholder="https://lite.tiktok.com/..."></textarea><button class="btn primary wide">💾 Lưu danh sách</button></form>`)+card('📋 Danh sách video', `<div class="list">${videos.map((v,i)=>`<div class="list-item"><span>${esc(v)}</span><a href="/Video/Delete/${i}">🗑️</a></div>`).join('')||'<div class="empty">Chưa có video.</div>'}</div>`); res.send(layout('Thêm Video',body,'settings')); });
-app.post('/Video/AddVideo',(req,res)=>{ const vs=String(req.body.videos||'').split(/\r?\n/).map(s=>s.trim()).filter(Boolean); const videos=read('videos'); for(const v of vs) if(!videos.includes(v)) videos.push(v); write('videos',videos); res.redirect('/Video/AddVideo'); });
-app.get('/Video/Delete/:i',(req,res)=>{ const v=read('videos'); v.splice(Number(req.params.i),1); write('videos',v); res.redirect('/Video/AddVideo'); });
+app.get('/Video/AddVideo',(req,res)=>{
+  const store=readVideoStore();
+  const options=Object.entries(VIDEO_TYPES).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join('');
+  const groups=Object.entries(VIDEO_TYPES).map(([k,v])=>{
+    const list=store[k]||[];
+    return `<h3>${esc(v.label)} <small class="muted">${list.length} link</small></h3><div class="list">${list.map((url,i)=>`<div class="list-item"><span>${esc(url)}</span><a href="/Video/Delete/${k}/${i}">🗑️</a></div>`).join('')||'<div class="empty">Chưa có video.</div>'}</div>`;
+  }).join('');
+  const body=card('🎬 Thêm video vào API', `<form method="post"><label>Loại video</label><select name="type">${options}</select><label>Danh sách link, mỗi link 1 dòng</label><textarea name="videos" rows="7" placeholder="Dán mỗi dòng 1 link. Nếu chọn TikTok Lite, hệ thống sẽ tự đổi các link TikTok thường đã có mapping sang lite.tiktok.com/t/..."></textarea><small class="muted">TikTok Lite: nếu link thường đã có short-link Lite trong hệ thống thì sẽ tự chuyển. Link chưa có mapping sẽ giữ làm fallback.</small><button class="btn primary wide">💾 Lưu vào API</button></form>`)+card('📋 Danh sách video theo API', groups);
+  res.send(layout('Thêm Video',body,'settings'));
+});
+app.post('/Video/AddVideo',(req,res)=>{
+  const type=VIDEO_TYPES[req.body.type] ? req.body.type : 'tiktok60';
+  const vs=String(req.body.videos||'').split(/\r?\n/).map(s=>s.trim()).filter(Boolean).map(normalizeVideoUrl).filter(Boolean);
+  const store=readVideoStore();
+  for(const v of vs) if(!store[type].includes(v)) store[type].push(v);
+  writeVideoStore(store);
+  res.redirect('/Video/AddVideo');
+});
+app.get('/Video/Delete/:type/:i',(req,res)=>{
+  const store=readVideoStore();
+  const type=VIDEO_TYPES[req.params.type] ? req.params.type : 'tiktok60';
+  store[type].splice(Number(req.params.i),1);
+  writeVideoStore(store);
+  res.redirect('/Video/AddVideo');
+});
 
 
 const DEFAULT_TIKTOK_60_180_LINKS = [
@@ -496,6 +545,18 @@ const DEFAULT_TIKTOK_LITE_60_180_LINKS = [
   'https://lite.tiktok.com/t/ZSkAVJYn1/'
 ];
 const DEFAULT_TIKTOK_LITE_10_LINKS = DEFAULT_TIKTOK_LITE_60_180_LINKS;
+
+// Bảng quy đổi link TikTok thường → link TikTok Lite đã biết.
+// Lưu ý: lite.tiktok.com/t/... là short-link riêng, không thể suy ra chính xác 100% chỉ từ video_id.
+// Với các video đã có link Lite, hệ thống sẽ tự đổi. Link chưa có mapping sẽ giữ link gốc làm fallback.
+const TIKTOK_TO_LITE_MAP = {
+  '7641538045031779602': 'https://lite.tiktok.com/t/ZSkAVFkcQ/',
+  '7641537972805881096': 'https://lite.tiktok.com/t/ZSkA4vR7/',
+  '7641567213220007186': 'https://lite.tiktok.com/t/ZSkA4vERA/',
+  '7641567168508841224': 'https://lite.tiktok.com/t/ZSkA4791W/',
+  '7641567085427969298': 'https://lite.tiktok.com/t/ZSkA4tBcN/',
+  '7641566922881944833': 'https://lite.tiktok.com/t/ZSkAVJYn1/'
+};
 function builtinVideoList(envKey){
   if (/LITE/i.test(envKey) && /10/i.test(envKey)) return DEFAULT_TIKTOK_LITE_10_LINKS;
   if (/LITE/i.test(envKey)) return DEFAULT_TIKTOK_LITE_60_180_LINKS;
@@ -528,6 +589,17 @@ function normalizeVideoUrl(u){
   if (!/^https?:\/\//i.test(u)) return '';
   return u;
 }
+function normalizeVideoUrlForType(u, type){
+  u = normalizeVideoUrl(u);
+  if (!u) return '';
+  const isLiteType = /^lite/i.test(String(type || ''));
+  if (!isLiteType) return u;
+  if (/lite\.tiktok\.com\/t\//i.test(u)) return u;
+  const id = extractTikTokVideoId(u);
+  if (id && TIKTOK_TO_LITE_MAP[id]) return TIKTOK_TO_LITE_MAP[id];
+  // Không có short-link Lite tương ứng thì giữ fallback để không mất link.
+  return u;
+}
 function parseVideoListText(text){
   text = String(text || '').trim();
   if (!text) return [];
@@ -539,17 +611,17 @@ function parseVideoListText(text){
   return text.split(/\r?\n/).map(x=>x.trim()).filter(x=>x && !x.startsWith('#')).map(normalizeVideoUrl).filter(Boolean);
 }
 async function loadVideosFromSource(envKey, fallbackLocal = true){
+  const type = videoTypeFromEnvKey(envKey);
+  const local = fallbackLocal ? (readVideoStore()[type] || []).map(normalizeVideoUrl).filter(Boolean) : [];
+  const builtin = builtinVideoList(envKey).map(normalizeVideoUrl).filter(Boolean);
   const source = process.env[envKey];
   if (source) {
     const r = await fetch(source, { headers: { 'user-agent':'QuangFunShortcut/1.0' }, signal: AbortSignal.timeout(6000) });
     if (!r.ok) throw new Error('Không đọc được nguồn video: '+r.status);
-    const list = parseVideoListText(await r.text());
-    if (list.length) return list;
+    const remote = parseVideoListText(await r.text());
+    return uniqList([...local, ...remote, ...builtin]);
   }
-  const builtin = builtinVideoList(envKey).map(normalizeVideoUrl).filter(Boolean);
-  if (builtin.length) return builtin;
-  if (fallbackLocal) return read('videos').map(normalizeVideoUrl).filter(Boolean);
-  return [];
+  return uniqList([...local, ...builtin]);
 }
 async function randomVideoResponse(req,res,envKey,label){
   try {
@@ -974,10 +1046,15 @@ function parseNumberResponse(t){
 }
 function parseSmsStatus(t){
   const s = String(t || '').trim();
-  if (/STATUS_OK:/i.test(s)) return { status:'ok', code:(s.split(':').slice(1).join(':')||'').trim(), raw:s };
-  if (/STATUS_WAIT_CODE/i.test(s)) return { status:'wait', code:'', raw:s };
-  if (/STATUS_CANCEL/i.test(s)) return { status:'cancel', code:'', raw:s };
-  return { status:'unknown', code:'', raw:s };
+  if (/STATUS_OK:/i.test(s)) return { status:'ok', code:(s.split(':').slice(1).join(':')||'').trim(), raw:s, message:'Đã nhận OTP' };
+  if (/STATUS_WAIT_CODE/i.test(s)) return { status:'wait', code:'', raw:s, message:'Đang chờ SMS: STATUS_WAIT_CODE' };
+  if (/STATUS_WAIT_RETRY/i.test(s)) return { status:'wait', code:'', raw:s, message:'Đang chờ gửi lại SMS: STATUS_WAIT_RETRY' };
+  if (/STATUS_CANCEL/i.test(s)) return { status:'cancel', code:'', raw:s, message:'Phiên đã hủy: STATUS_CANCEL' };
+  if (/NO_ACTIVATION/i.test(s)) return { status:'error', code:'', raw:s, message:'Không tìm thấy phiên thuê số: NO_ACTIVATION' };
+  if (/BAD_KEY/i.test(s)) return { status:'error', code:'', raw:s, message:'API key sai: BAD_KEY' };
+  if (/NO_BALANCE/i.test(s)) return { status:'error', code:'', raw:s, message:'Hết số dư: NO_BALANCE' };
+  if (/ERROR/i.test(s)) return { status:'error', code:'', raw:s, message:s };
+  return { status:'unknown', code:'', raw:s, message:s || 'Chưa có phản hồi từ API' };
 }
 async function simContext(req){
   const s = normalizeSimStore(req);
@@ -1024,7 +1101,7 @@ app.get('/thue-otp-sim', async (req,res)=>{
   const showConfig = req.query.config === '1' || !s.apiKey;
   const currentService = serviceName(s.service, services);
   const currentCountry = countryLabel(s.country, countryName(s.country, countries), prices);
-  const activeHtml = active.length ? `<div class="list">${active.map(a=>{ const localNum = localPhoneNumber(a.number, a.country); return `<div class="list-item sim-session"><div class="sim-main"><div class="sim-phone-row"><div><b>${esc(a.number)}</b><small class="muted">Số local: ${esc(localNum)}</small></div><div class="sim-inline-actions"><button class="mini-copy" type="button" data-copy="${esc(localNum)}">📋 Số</button><a class="btn danger smallbtn" href="/sim/cancel/${urlEnc(a.id)}">Hủy</a></div></div><small class="muted">ID: ${esc(a.id)} • ${esc(serviceName(a.service, services))} • ${esc(countryLabel(a.country, countryName(a.country, countries), prices))}</small><div class="otpbox sim-otpbox"><div><small>OTP SMS</small><b class="sim-code" data-id="${esc(a.id)}">------</b></div><span class="sim-status" data-id="${esc(a.id)}">Đang chờ SMS...</span><button type="button" data-copy-sim-id="${esc(a.id)}">📋</button></div></div><div class="sim-actions"><a class="btn soft smallbtn" href="/sim/complete/${urlEnc(a.id)}">Hoàn tất</a></div></div>`; }).join('')}</div>` : '<div class="empty">Chưa có phiên thuê số nào.</div>';
+  const activeHtml = active.length ? `<div class="list">${active.map(a=>{ const localNum = localPhoneNumber(a.number, a.country); return `<div class="list-item sim-session"><div class="sim-main"><div class="sim-phone-row"><div><b>${esc(a.number)}</b><small class="muted">Số local: ${esc(localNum)}</small></div><div class="sim-inline-actions"><button class="mini-copy" type="button" data-copy="${esc(localNum)}">📋 Số</button><a class="btn danger smallbtn" href="/sim/cancel/${urlEnc(a.id)}">Hủy</a></div></div><small class="muted">ID: ${esc(a.id)} • ${esc(serviceName(a.service, services))} • ${esc(countryLabel(a.country, countryName(a.country, countries), prices))}</small><div class="otpbox sim-otpbox"><div><small>OTP SMS</small><b class="sim-code" data-id="${esc(a.id)}">------</b></div><span class="sim-status" data-id="${esc(a.id)}">Đang kiểm tra OTP...</span><button type="button" data-check-sim-id="${esc(a.id)}">🔄</button><button type="button" data-copy-sim-id="${esc(a.id)}">📋</button></div></div></div>`; }).join('')}</div>` : '<div class="empty">Chưa có phiên thuê số nào.</div>';
   const configForm = showConfig
     ? `<form method="post" action="/thue-otp-sim/settings"><label>API key GrizzlySMS</label><input name="apiKey" value="${esc(s.apiKey)}" placeholder="Nhập API key"><label>Dịch vụ</label>${simSelect('service', s.service, services)}<label>Quốc gia</label><input id="countrySearch" class="country-search" type="search" placeholder="Tìm quốc gia hoặc mã vùng, ví dụ: 84, 57, Vietnam, Colombia">${simSelect('country', s.country, countries, prices)}<button class="btn primary wide">💾 Lưu cấu hình</button><a class="btn soft wide" href="/thue-otp-sim">Ẩn cấu hình</a></form>`
     : `<div class="sim-config-summary"><div class="field"><label>Cấu hình hiện tại</label><div class="stat">${esc(currentService)}<br><small>${esc(currentCountry)}</small></div></div><a class="btn soft wide" href="/thue-otp-sim?config=1">⚙️ Cấu hình</a></div>`;
@@ -1059,7 +1136,7 @@ app.get('/api/sim/status/:id', async (req,res)=>{
   try{
     const raw=(await grizzly('getStatus',{api_key:s.apiKey, id:req.params.id})).text;
     const st=parseSmsStatus(raw);
-    res.json({status:true,...st});
+    res.json({status:true, checkedAt:new Date().toLocaleTimeString('vi-VN'), ...st});
   }catch(e){res.json({status:false,message:e.message});}
 });
 app.get('/sim/cancel/:id', async (req,res)=>{

@@ -88,8 +88,13 @@ function urlEnc(v){ return encodeURIComponent(v || ''); }
 function splitAccountLine(line){
   line = String(line || '').trim();
   if (!line) return [];
-  if (line.includes('|')) return line.split('|').map(s=>s.trim()).filter(Boolean);
-  return line.split(/\t+|\s{2,}|\s+/).map(s=>s.trim()).filter(Boolean);
+  // Hỗ trợ tài khoản bị trộn tab/khoảng trắng/dấu | trong cùng một dòng.
+  // Ví dụ: user\t@handle email|pass|token|clientId
+  return line
+    .replace(/\|/g, ' ')
+    .split(/\s+/)
+    .map(s => s.trim())
+    .filter(Boolean);
 }
 function is2faSecret(s){ return /^[A-Z2-7]{16,}$/i.test(String(s||'').replace(/\s/g,'')); }
 function parseUser2faLoose(raw){
@@ -219,7 +224,7 @@ app.get('/', (req,res)=>{
   if (req.query.saved === 'account') body += `<div class="notice ok">✅ Đã lưu tài khoản. Bấm <b>Lấy tài khoản</b> để lấy ra dùng.</div>`;
   if (req.query.noAccount === '1') body += `<div class="notice warn">⚠️ Không còn tài khoản mới để lấy. Hãy thêm tài khoản mới trong mục Thêm tài khoản.</div>`;
   if (settings.showAccount) body += card('👤 Tài khoản', renderAccount(acc));
-  if (settings.showVideos) body += card('🎬 Xem video', `<div class="btn-grid">${btn('/Home/GetRandomVideo?type=regular','▶ Video TikTok 60p')}${btn('/Shortcut/TikTok180','⏱️ Video TikTok 180p','soft')}${btn('/Home/GetRandomVideo10?type=lite','▶ Video Lite 10p')}${btn('/Home/GetRandomVideo?type=lite','▶ Video Lite 60p')}${btn('/Shortcut/TikTokLite180','⏱️ Video TikTok Lite 180p','soft')}${btn('/Video/AddVideo','➕ Thêm video','soft')}</div><small class="muted">${videos.length} video đang lưu</small>`);
+  if (settings.showVideos) body += card('🎬 Xem video', `<div class="btn-grid">${btn('/Shortcut/TikTok60','▶ Video TikTok 60p')}${btn('/Shortcut/TikTok180','⏱️ Video TikTok 180p','soft')}${btn('/r/RandomTiktok10','▶ Video TikTok 10p','soft')}${btn('/Shortcut/TikTokLite60','▶ Video Lite 60p')}${btn('/Shortcut/TikTokLite180','⏱️ Video Lite 180p','soft')}${btn('/r/RandomTiktokLite10','▶ Video Lite 10p','soft')}${btn('/Video/AddVideo','➕ Thêm video','soft')}</div><small class="muted">API video dùng danh sách tích hợp hoặc nguồn ẩn trên server.</small>`);
   if (settings.showEmail) body += card('✉️ Link nhanh', links.length ? `<div class="list">${links.slice(0,5).map(l=>`<a class="list-item" target="_blank" href="${esc(l)}">${esc(l)}</a>`).join('')}</div>${btn('/Link/AddLink','Thêm link','soft')}` : `<div class="empty">Chưa có link.</div>${btn('/Link/AddLink','Thêm link','soft')}`);
   if (settings.showIcloud) body += card('☁️ iCloud', `<div class="field"><label>Tài khoản iCloud</label><div class="copy-row"><input readonly value="${esc(settings.icloudEmail||'Chưa cài')}"><button onclick="copyValue(this)">📋</button></div></div><div class="field"><label>Mật khẩu iCloud</label><div class="copy-row"><input readonly value="${esc(settings.icloudPassword||'')}"><button onclick="copyValue(this)">📋</button></div></div>`);
   res.send(layout('Trang chủ', body, 'home'));
@@ -357,20 +362,125 @@ app.post('/Account/AddAccount',(req,res)=>{
 app.get('/Account/Clear',(req,res)=>{ write('accounts',[]); write('used',[]); res.redirect('/Account/AddAccount'); });
 
 
-app.get('/Shortcut/TikTok180',(req,res)=>{
+
+function shortcutInstallUrl(kind){
+  const map = {
+    tiktok180: process.env.SHORTCUT_TIKTOK_180_URL || '',
+    lite180: process.env.SHORTCUT_TIKTOK_LITE_180_URL || '',
+    tiktok60: process.env.SHORTCUT_TIKTOK_60_URL || '',
+    lite60: process.env.SHORTCUT_TIKTOK_LITE_60_URL || '',
+    tiktok10: process.env.SHORTCUT_TIKTOK_10_URL || '',
+    lite10: process.env.SHORTCUT_TIKTOK_LITE_10_URL || ''
+  };
+  return map[kind] || '';
+}
+function shortcutPage(req, res, title, apiPath, directPath, kind, autoPath){
   const base = `${req.protocol}://${req.get('host')}`;
-  const body = card('⏱️ Phím tắt Video TikTok 180p', `<div class="empty">API dùng trong Phím tắt</div><div class="field"><label>API JSON</label><div class="copy-row"><input readonly value="${esc(base+'/api/RandomTiktok180')}"><button onclick="copyValue(this)">📋</button></div></div><div class="field"><label>Link mở trực tiếp</label><div class="copy-row"><input readonly value="${esc(base+'/r/RandomTiktok180')}"><button onclick="copyValue(this)">📋</button></div></div><p class="muted">Phím tắt chỉ gọi API domain này, không cần lộ raw GitHub.</p><div class="btn-grid"><a class="btn primary" href="shortcuts://">📲 Mở ứng dụng Phím tắt</a><a class="btn soft" href="/">← Quay lại trang chủ</a></div>`);
-  res.send(layout('TikTok 180p', body, 'home'));
-});
-app.get('/Shortcut/TikTokLite180',(req,res)=>{
-  const base = `${req.protocol}://${req.get('host')}`;
-  const body = card('⏱️ Phím tắt Video TikTok Lite 180p', `<div class="empty">API dùng trong Phím tắt</div><div class="field"><label>API JSON</label><div class="copy-row"><input readonly value="${esc(base+'/api/RandomTiktokLite180')}"><button onclick="copyValue(this)">📋</button></div></div><div class="field"><label>Link mở trực tiếp</label><div class="copy-row"><input readonly value="${esc(base+'/r/RandomTiktokLite180')}"><button onclick="copyValue(this)">📋</button></div></div><p class="muted">Phím tắt chỉ gọi API domain này, không cần lộ raw GitHub.</p><div class="btn-grid"><a class="btn primary" href="shortcuts://">📲 Mở ứng dụng Phím tắt</a><a class="btn soft" href="/">← Quay lại trang chủ</a></div>`);
-  res.send(layout('TikTok Lite 180p', body, 'home'));
-});
+  const install = shortcutInstallUrl(kind);
+  const installBtn = install
+    ? `<a class="btn primary wide huge-btn" href="${esc(install)}">📲 Thêm phím tắt iPhone</a>`
+    : `<a class="btn primary wide huge-btn" href="shortcuts://">📲 Mở ứng dụng Phím tắt</a><div class="notice warn"><b>Chưa có link cài phím tắt.</b><br>Sau khi bạn tạo phím tắt và chia sẻ iCloud, thêm link vào biến môi trường Render để nút này mở đúng trang “Thêm phím tắt”.</div>`;
+  const body = card('⏱️ '+esc(title), `
+    <div class="shortcut-hero-box"><b>iPhone:</b> bấm nút bên dưới để mở trang thêm phím tắt như ảnh. Phím tắt chỉ gọi API của domain này, không lộ GitHub gốc.</div>
+    ${installBtn}
+    <div class="field"><label>API JSON dùng trong Phím tắt</label><div class="copy-row"><input readonly value="${esc(base+apiPath)}"><button onclick="copyValue(this)">📋</button></div></div>
+    <div class="field"><label>Link mở ngẫu nhiên 1 video</label><div class="copy-row"><input readonly value="${esc(base+directPath)}"><button onclick="copyValue(this)">📋</button></div></div>
+    <div class="shortcut-hero-box"><b>Android:</b> web không thể chạy nền chắc chắn như iPhone Shortcuts. Có thể dùng trang tự mở khi còn đang mở trình duyệt.</div>
+    <a class="btn soft wide huge-btn" href="${esc(autoPath)}">🤖 Mở chế độ Android tự mở mỗi 60 phút</a>
+    <a class="btn soft wide" href="/">← Quay lại trang chủ</a>
+  `);
+  res.send(layout(title, body, 'home'));
+}
+app.get('/Shortcut/TikTok180',(req,res)=> shortcutPage(req,res,'Treo 180p TikTok','/api/RandomTiktok180','/r/RandomTiktok180','tiktok180','/Auto/TikTok180'));
+app.get('/Shortcut/TikTokLite180',(req,res)=> shortcutPage(req,res,'Treo 180p TikTok Lite','/api/RandomTiktokLite180','/r/RandomTiktokLite180','lite180','/Auto/TikTokLite180'));
+app.get('/Shortcut/TikTok60',(req,res)=> shortcutPage(req,res,'Treo 60p TikTok','/api/RandomTiktok60','/r/RandomTiktok60','tiktok60','/Auto/TikTok60'));
+app.get('/Shortcut/TikTokLite60',(req,res)=> shortcutPage(req,res,'Treo 60p TikTok Lite','/api/RandomTiktokLite60','/r/RandomTiktokLite60','lite60','/Auto/TikTokLite60'));
+function autoAndroidPage(req,res,title,apiPath,waitSeconds){
+  const body = card('🤖 '+esc(title), `
+    <div class="notice ok"><b>Chế độ Android</b><br>Trang này sẽ lấy link ngẫu nhiên rồi mở. Nếu trình duyệt còn giữ trang này, nó sẽ tiếp tục theo chu kỳ.</div>
+    <div class="big-result" id="autoCount">Chuẩn bị mở...</div>
+    <button class="btn primary wide huge-btn" id="openNowBtn">▶ Mở ngay 1 link</button>
+    <a class="btn soft wide" href="/">← Quay lại</a>
+    <script>
+      const API=${JSON.stringify(apiPath)};
+      const WAIT=${Number(waitSeconds)||3600};
+      let next=5;
+      async function openRandom(){
+        try{ const r=await fetch(API); const d=await r.json(); if(d && (d.url||d.data)){ location.href=d.url||d.data; } }
+        catch(e){ document.getElementById('autoCount').textContent='Lỗi: '+e.message; }
+      }
+      document.getElementById('openNowBtn').onclick=openRandom;
+      setInterval(()=>{ next--; document.getElementById('autoCount').textContent='Tự mở sau '+next+' giây'; if(next<=0){ openRandom(); next=WAIT; } },1000);
+    </script>
+  `);
+  res.send(layout(title, body, 'home'));
+}
+app.get('/Auto/TikTok180',(req,res)=>autoAndroidPage(req,res,'TikTok 180p tự mở mỗi 60 phút','/api/RandomTiktok180',3600));
+app.get('/Auto/TikTokLite180',(req,res)=>autoAndroidPage(req,res,'TikTok Lite 180p tự mở mỗi 60 phút','/api/RandomTiktokLite180',3600));
+app.get('/Auto/TikTok60',(req,res)=>autoAndroidPage(req,res,'TikTok 60p tự mở mỗi 60 phút','/api/RandomTiktok60',3600));
+app.get('/Auto/TikTokLite60',(req,res)=>autoAndroidPage(req,res,'TikTok Lite 60p tự mở mỗi 60 phút','/api/RandomTiktokLite60',3600));
 
 app.get('/Video/AddVideo',(req,res)=>{ const videos=read('videos'); const body=card('🎬 Thêm nhiều video', `<form method="post"><label>Danh sách link, mỗi link 1 dòng</label><textarea name="videos" rows="7" placeholder="https://lite.tiktok.com/..."></textarea><button class="btn primary wide">💾 Lưu danh sách</button></form>`)+card('📋 Danh sách video', `<div class="list">${videos.map((v,i)=>`<div class="list-item"><span>${esc(v)}</span><a href="/Video/Delete/${i}">🗑️</a></div>`).join('')||'<div class="empty">Chưa có video.</div>'}</div>`); res.send(layout('Thêm Video',body,'settings')); });
 app.post('/Video/AddVideo',(req,res)=>{ const vs=String(req.body.videos||'').split(/\r?\n/).map(s=>s.trim()).filter(Boolean); const videos=read('videos'); for(const v of vs) if(!videos.includes(v)) videos.push(v); write('videos',videos); res.redirect('/Video/AddVideo'); });
 app.get('/Video/Delete/:i',(req,res)=>{ const v=read('videos'); v.splice(Number(req.params.i),1); write('videos',v); res.redirect('/Video/AddVideo'); });
+
+
+const DEFAULT_TIKTOK_60_180_LINKS = [
+  'https://www.tiktok.com/@acc.tiktok614/video/7641537801594408200',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641537021340601621',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641536907662396693',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641529211777223956',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641529133813583125',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641529055820516629',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641528893987458312',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641526131258068240',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641525895164890384',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641525753384832257',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641525681662201105',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641511698179951873',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641511580173208848',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641511305819475216',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641433858394770709',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641538045031779602',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641537972805881096',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641567213220007186',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641567168508841224',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641567085427969298',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641566922881944833'
+];
+const DEFAULT_TIKTOK_10_LINKS = [
+  'https://www.tiktok.com/@acc.tiktok614/video/7641538045031779602',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641537972805881096',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641567213220007186',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641567168508841224',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641567085427969298',
+  'https://www.tiktok.com/@acc.tiktok614/video/7641566922881944833'
+];
+function builtinVideoList(envKey){
+  if (/10/i.test(envKey)) return DEFAULT_TIKTOK_10_LINKS;
+  return DEFAULT_TIKTOK_60_180_LINKS;
+}
+function extractTikTokVideoId(url){
+  const m = String(url || '').match(/\/video\/(\d+)/i);
+  return m ? m[1] : '';
+}
+function applyTemplate(tpl, url){
+  const id = extractTikTokVideoId(url);
+  return String(tpl || '').replace(/\{id\}/g, id).replace(/\{url\}/g, encodeURIComponent(url));
+}
+function makeTikTokAppUrl(url){
+  // TikTok thường. Web URL vẫn là fallback ổn nhất, nhưng có thể đổi bằng env nếu cần.
+  const tpl = process.env.TIKTOK_APP_OPEN_TEMPLATE || '';
+  return tpl ? applyTemplate(tpl, url) : url;
+}
+function makeLiteOpenUrl(url){
+  // TikTok Lite: mặc định dùng scheme thường gặp. Nếu máy bạn dùng scheme khác, đổi biến env trên Render:
+  // TIKTOK_LITE_OPEN_TEMPLATE=snssdk1340://aweme/detail/{id}
+  // hoặc để trống nếu muốn mở bằng web link TikTok thường.
+  const tpl = process.env.TIKTOK_LITE_OPEN_TEMPLATE || 'snssdk1340://aweme/detail/{id}';
+  const id = extractTikTokVideoId(url);
+  return id ? applyTemplate(tpl, url) : url;
+}
 
 function normalizeVideoUrl(u){
   u = String(u || '').trim();
@@ -396,6 +506,8 @@ async function loadVideosFromSource(envKey, fallbackLocal = true){
     const list = parseVideoListText(await r.text());
     if (list.length) return list;
   }
+  const builtin = builtinVideoList(envKey).map(normalizeVideoUrl).filter(Boolean);
+  if (builtin.length) return builtin;
   if (fallbackLocal) return read('videos').map(normalizeVideoUrl).filter(Boolean);
   return [];
 }
@@ -403,8 +515,10 @@ async function randomVideoResponse(req,res,envKey,label){
   try {
     const list = await loadVideosFromSource(envKey, true);
     if (!list.length) return res.status(404).json({ status:false, message:'Chưa có link video cho '+label });
-    const url = list[Math.floor(Math.random()*list.length)];
-    return res.json({ status:true, data:url, url, label, total:list.length });
+    const webUrl = list[Math.floor(Math.random()*list.length)];
+    const appUrl = /lite/i.test(label) ? makeLiteOpenUrl(webUrl) : makeTikTokAppUrl(webUrl);
+    // data là URL Shortcut sẽ mở. webUrl là link web fallback nếu app scheme không mở.
+    return res.json({ status:true, data:appUrl, url:appUrl, webUrl, fallback:webUrl, videoId:extractTikTokVideoId(webUrl), label, total:list.length });
   } catch(e) {
     return res.status(500).json({ status:false, message:e.message });
   }
@@ -413,7 +527,9 @@ async function randomVideoRedirect(req,res,envKey,label){
   try {
     const list = await loadVideosFromSource(envKey, true);
     if (!list.length) return res.redirect('/Video/AddVideo');
-    return res.redirect(list[Math.floor(Math.random()*list.length)]);
+    const webUrl = list[Math.floor(Math.random()*list.length)];
+    const appUrl = /lite/i.test(label) ? makeLiteOpenUrl(webUrl) : makeTikTokAppUrl(webUrl);
+    return res.redirect(appUrl || webUrl);
   } catch(e) {
     return res.status(500).send('Không lấy được video: '+esc(e.message));
   }
@@ -421,16 +537,41 @@ async function randomVideoRedirect(req,res,envKey,label){
 
 // API cho iPhone Shortcut: chỉ gọi domain của bạn, không lộ raw GitHub trong phím tắt.
 app.get('/api/RandomTiktok', (req,res)=>randomVideoResponse(req,res,'TIKTOK_60_SOURCE_URL','TikTok 60p'));
+app.get('/api/RandomTiktok60', (req,res)=>randomVideoResponse(req,res,'TIKTOK_60_SOURCE_URL','TikTok 60p'));
 app.get('/api/RandomTiktok180', (req,res)=>randomVideoResponse(req,res,'TIKTOK_180_SOURCE_URL','TikTok 180p'));
+app.get('/api/RandomTiktok10', (req,res)=>randomVideoResponse(req,res,'TIKTOK_10_SOURCE_URL','TikTok 10p'));
 app.get('/api/RandomTiktokLite', (req,res)=>randomVideoResponse(req,res,'TIKTOK_LITE_60_SOURCE_URL','TikTok Lite 60p'));
+app.get('/api/RandomTiktokLite60', (req,res)=>randomVideoResponse(req,res,'TIKTOK_LITE_60_SOURCE_URL','TikTok Lite 60p'));
 app.get('/api/RandomTiktokLite180', (req,res)=>randomVideoResponse(req,res,'TIKTOK_LITE_180_SOURCE_URL','TikTok Lite 180p'));
+app.get('/api/RandomTiktokLite10', (req,res)=>randomVideoResponse(req,res,'TIKTOK_LITE_10_SOURCE_URL','TikTok Lite 10p'));
+// Alias không phân biệt hoa/thường để Shortcut nhập nhầm vẫn chạy.
+app.get('/api/RandomTiktoklite', (req,res)=>randomVideoResponse(req,res,'TIKTOK_LITE_60_SOURCE_URL','TikTok Lite 60p'));
+app.get('/api/RandomTiktoklite60', (req,res)=>randomVideoResponse(req,res,'TIKTOK_LITE_60_SOURCE_URL','TikTok Lite 60p'));
+app.get('/api/RandomTiktoklite180', (req,res)=>randomVideoResponse(req,res,'TIKTOK_LITE_180_SOURCE_URL','TikTok Lite 180p'));
+app.get('/api/RandomTiktoklite10', (req,res)=>randomVideoResponse(req,res,'TIKTOK_LITE_10_SOURCE_URL','TikTok Lite 10p'));
+app.get('/api/randomtiktoklite', (req,res)=>randomVideoResponse(req,res,'TIKTOK_LITE_60_SOURCE_URL','TikTok Lite 60p'));
+app.get('/api/randomtiktoklite60', (req,res)=>randomVideoResponse(req,res,'TIKTOK_LITE_60_SOURCE_URL','TikTok Lite 60p'));
+app.get('/api/randomtiktoklite180', (req,res)=>randomVideoResponse(req,res,'TIKTOK_LITE_180_SOURCE_URL','TikTok Lite 180p'));
+app.get('/api/randomtiktoklite10', (req,res)=>randomVideoResponse(req,res,'TIKTOK_LITE_10_SOURCE_URL','TikTok Lite 10p'));
 app.get('/r/RandomTiktok', (req,res)=>randomVideoRedirect(req,res,'TIKTOK_60_SOURCE_URL','TikTok 60p'));
+app.get('/r/RandomTiktok60', (req,res)=>randomVideoRedirect(req,res,'TIKTOK_60_SOURCE_URL','TikTok 60p'));
 app.get('/r/RandomTiktok180', (req,res)=>randomVideoRedirect(req,res,'TIKTOK_180_SOURCE_URL','TikTok 180p'));
+app.get('/r/RandomTiktok10', (req,res)=>randomVideoRedirect(req,res,'TIKTOK_10_SOURCE_URL','TikTok 10p'));
 app.get('/r/RandomTiktokLite', (req,res)=>randomVideoRedirect(req,res,'TIKTOK_LITE_60_SOURCE_URL','TikTok Lite 60p'));
+app.get('/r/RandomTiktokLite60', (req,res)=>randomVideoRedirect(req,res,'TIKTOK_LITE_60_SOURCE_URL','TikTok Lite 60p'));
 app.get('/r/RandomTiktokLite180', (req,res)=>randomVideoRedirect(req,res,'TIKTOK_LITE_180_SOURCE_URL','TikTok Lite 180p'));
+app.get('/r/RandomTiktokLite10', (req,res)=>randomVideoRedirect(req,res,'TIKTOK_LITE_10_SOURCE_URL','TikTok Lite 10p'));
+app.get('/r/RandomTiktoklite', (req,res)=>randomVideoRedirect(req,res,'TIKTOK_LITE_60_SOURCE_URL','TikTok Lite 60p'));
+app.get('/r/RandomTiktoklite60', (req,res)=>randomVideoRedirect(req,res,'TIKTOK_LITE_60_SOURCE_URL','TikTok Lite 60p'));
+app.get('/r/RandomTiktoklite180', (req,res)=>randomVideoRedirect(req,res,'TIKTOK_LITE_180_SOURCE_URL','TikTok Lite 180p'));
+app.get('/r/RandomTiktoklite10', (req,res)=>randomVideoRedirect(req,res,'TIKTOK_LITE_10_SOURCE_URL','TikTok Lite 10p'));
+app.get('/r/randomtiktoklite', (req,res)=>randomVideoRedirect(req,res,'TIKTOK_LITE_60_SOURCE_URL','TikTok Lite 60p'));
+app.get('/r/randomtiktoklite60', (req,res)=>randomVideoRedirect(req,res,'TIKTOK_LITE_60_SOURCE_URL','TikTok Lite 60p'));
+app.get('/r/randomtiktoklite180', (req,res)=>randomVideoRedirect(req,res,'TIKTOK_LITE_180_SOURCE_URL','TikTok Lite 180p'));
+app.get('/r/randomtiktoklite10', (req,res)=>randomVideoRedirect(req,res,'TIKTOK_LITE_10_SOURCE_URL','TikTok Lite 10p'));
 
 app.get('/Home/GetRandomVideo',(req,res)=>randomVideoRedirect(req,res,'TIKTOK_60_SOURCE_URL','TikTok 60p'));
-app.get('/Home/GetRandomVideo10',(req,res)=>randomVideoRedirect(req,res,'TIKTOK_LITE_60_SOURCE_URL','TikTok Lite 10p'));
+app.get('/Home/GetRandomVideo10',(req,res)=>randomVideoRedirect(req,res,'TIKTOK_10_SOURCE_URL','TikTok 10p'));
 
 app.get('/Link/AddLink',(req,res)=>{ const links=read('links'); const body=card('🔗 Thêm link', `<form method="post"><label>Link</label><input name="link" placeholder="Nhập link"><button class="btn primary wide">💾 Lưu link</button></form>`)+card('📋 Danh sách link', `<button class="btn soft wide" onclick="copyText(${JSON.stringify(links.join('\n'))})">📋 Copy tất cả</button><div class="list">${links.map((l,i)=>`<div class="list-item"><span>${esc(l)}</span><a href="/Link/Delete/${i}">🗑️</a></div>`).join('')||'<div class="empty">Chưa có link.</div>'}</div>${btn('/Link/Clear','🗑️ Xóa tất cả','danger')}`); res.send(layout('Thêm Link',body,'settings')); });
 app.post('/Link/AddLink',(req,res)=>{ const links=read('links'); const l=String(req.body.link||'').trim(); if(l && !links.includes(l)) links.push(l); write('links',links); res.redirect('/Link/AddLink'); });

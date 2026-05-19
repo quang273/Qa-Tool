@@ -29,7 +29,7 @@ const files = {
 };
 const defaults = {
   accounts: [], used: [], videos: [], links: [], user2fa: [], logs: [], iphoneQueue: [],
-  settings: { mailMethod:'OAuth2', icloudEmail:'', icloudPassword:'', showVideos:true, showAccount:true, showEmail:true, showIcloud:true, zaloUrl:'https://auraesoftware.com/zalo.jpg', iphoneToolUrl:'http://127.0.0.1:5799/api/rename-device', passwordEnabled:false, accessPassword:'zx' },
+  settings: { mailMethod:'OAuth2', icloudEmail:'', icloudPassword:'', showVideos:true, showAccount:true, showEmail:true, showIcloud:true, zaloUrl:'/zalo.jpg', iphoneToolUrl:'http://127.0.0.1:5799/api/rename-device', passwordEnabled:false, accessPassword:'zx' },
   sim: { apiKey:'', service:'lf', country:'10', active: [] },
   domainSettings: {},
   domainSim: {},
@@ -76,10 +76,16 @@ function isAuthed(req){
 }
 app.use((req,res,next)=>{
   const s = domainSettings(req);
-  if (!s.passwordEnabled) return next();
-  const open = req.path === '/Login' || req.path === '/Login/Logout' || req.path.startsWith('/app.') || req.path.startsWith('/api/otp');
-  if (open || isAuthed(req)) return next();
+  // API/phím tắt video phải công khai để iPhone Shortcut gọi được dù domain bật mật khẩu.
+  const publicPaths = [
+    '/Login', '/Login/Logout', '/app.css', '/app.js', '/favicon.ico',
+    '/api/otp', '/api/RandomTiktok', '/api/randomtiktok', '/api/text/',
+    '/r/RandomTiktok', '/r/randomtiktok', '/Shortcut/', '/Auto/'
+  ];
+  const isPublic = publicPaths.some(x => req.path === x || req.path.startsWith(x));
+  if (!s.passwordEnabled || isPublic) return next();
   if (req.path.startsWith('/api/') || req.path.startsWith('/IphoneTool/')) return res.status(401).json({status:false,message:'Cần nhập mật khẩu truy cập'});
+  if (isAuthed(req)) return next();
   return res.redirect('/Login');
 });
 
@@ -220,7 +226,8 @@ app.get('/', (req,res)=>{
   const acc = getAccountFromQuery(req);
   const videos = read('videos');
   const links = read('links');
-  let body = `<div class="quick-grid"><a class="quick" href="${esc(settings.zaloUrl)}" target="_blank">➕<span>Cài web mới</span></a><a class="quick" href="/Account/AddAccount">👤<span>Thêm tài khoản</span></a><a class="quick" href="/Settings">⚙️<span>Cài đặt</span></a><a class="quick danger" href="/Login/Logout">↪<span>Đăng xuất</span></a></div>`;
+  const installUrl = (!settings.zaloUrl || String(settings.zaloUrl).includes('auraesoftware.com/zalo.jpg')) ? '/zalo.jpg' : settings.zaloUrl;
+  let body = `<div class="quick-grid"><a class="quick" href="${esc(installUrl)}" target="_blank">➕<span>Cài web mới</span></a><a class="quick" href="/Account/AddAccount">👤<span>Thêm tài khoản</span></a><a class="quick" href="/Settings">⚙️<span>Cài đặt</span></a><a class="quick danger" href="/Login/Logout">↪<span>Đăng xuất</span></a></div>`;
   if (req.query.saved === 'account') body += `<div class="notice ok">✅ Đã lưu tài khoản. Bấm <b>Lấy tài khoản</b> để lấy ra dùng.</div>`;
   if (req.query.noAccount === '1') body += `<div class="notice warn">⚠️ Không còn tài khoản mới để lấy. Hãy thêm tài khoản mới trong mục Thêm tài khoản.</div>`;
   if (settings.showAccount) body += card('👤 Tài khoản', renderAccount(acc));
@@ -456,7 +463,18 @@ const DEFAULT_TIKTOK_10_LINKS = [
   'https://www.tiktok.com/@acc.tiktok614/video/7641567085427969298',
   'https://www.tiktok.com/@acc.tiktok614/video/7641566922881944833'
 ];
+const DEFAULT_TIKTOK_LITE_60_180_LINKS = [
+  'https://lite.tiktok.com/t/ZSkAVFkcQ/',
+  'https://lite.tiktok.com/t/ZSkA4vR7/',
+  'https://lite.tiktok.com/t/ZSkA4vERA/',
+  'https://lite.tiktok.com/t/ZSkA4791W/',
+  'https://lite.tiktok.com/t/ZSkA4tBcN/',
+  'https://lite.tiktok.com/t/ZSkAVJYn1/'
+];
+const DEFAULT_TIKTOK_LITE_10_LINKS = DEFAULT_TIKTOK_LITE_60_180_LINKS;
 function builtinVideoList(envKey){
+  if (/LITE/i.test(envKey) && /10/i.test(envKey)) return DEFAULT_TIKTOK_LITE_10_LINKS;
+  if (/LITE/i.test(envKey)) return DEFAULT_TIKTOK_LITE_60_180_LINKS;
   if (/10/i.test(envKey)) return DEFAULT_TIKTOK_10_LINKS;
   return DEFAULT_TIKTOK_60_180_LINKS;
 }
@@ -474,12 +492,10 @@ function makeTikTokAppUrl(url){
   return tpl ? applyTemplate(tpl, url) : url;
 }
 function makeLiteOpenUrl(url){
-  // TikTok Lite: mặc định dùng scheme thường gặp. Nếu máy bạn dùng scheme khác, đổi biến env trên Render:
-  // TIKTOK_LITE_OPEN_TEMPLATE=snssdk1340://aweme/detail/{id}
-  // hoặc để trống nếu muốn mở bằng web link TikTok thường.
-  const tpl = process.env.TIKTOK_LITE_OPEN_TEMPLATE || 'snssdk1340://aweme/detail/{id}';
-  const id = extractTikTokVideoId(url);
-  return id ? applyTemplate(tpl, url) : url;
+  // TikTok Lite dùng link lite.tiktok.com/t/... để iPhone mở đúng theo Universal Link.
+  // Nếu cần thử scheme riêng thì đặt TIKTOK_LITE_OPEN_TEMPLATE trên Render.
+  const tpl = process.env.TIKTOK_LITE_OPEN_TEMPLATE || '';
+  return tpl ? applyTemplate(tpl, url) : url;
 }
 
 function normalizeVideoUrl(u){
@@ -518,7 +534,7 @@ async function randomVideoResponse(req,res,envKey,label){
     const webUrl = list[Math.floor(Math.random()*list.length)];
     const appUrl = /lite/i.test(label) ? makeLiteOpenUrl(webUrl) : makeTikTokAppUrl(webUrl);
     // data là URL Shortcut sẽ mở. webUrl là link web fallback nếu app scheme không mở.
-    return res.json({ status:true, data:appUrl, url:appUrl, webUrl, fallback:webUrl, videoId:extractTikTokVideoId(webUrl), label, total:list.length });
+    return res.json({ status:'success', data:appUrl, url:appUrl, webUrl, fallback:webUrl, videoId:extractTikTokVideoId(webUrl), label, total:list.length });
   } catch(e) {
     return res.status(500).json({ status:false, message:e.message });
   }
@@ -553,6 +569,31 @@ app.get('/api/randomtiktoklite', (req,res)=>randomVideoResponse(req,res,'TIKTOK_
 app.get('/api/randomtiktoklite60', (req,res)=>randomVideoResponse(req,res,'TIKTOK_LITE_60_SOURCE_URL','TikTok Lite 60p'));
 app.get('/api/randomtiktoklite180', (req,res)=>randomVideoResponse(req,res,'TIKTOK_LITE_180_SOURCE_URL','TikTok Lite 180p'));
 app.get('/api/randomtiktoklite10', (req,res)=>randomVideoResponse(req,res,'TIKTOK_LITE_10_SOURCE_URL','TikTok Lite 10p'));
+
+async function randomVideoText(req,res,envKey,label){
+  try {
+    const list = await loadVideosFromSource(envKey, true);
+    if (!list.length) return res.status(404).type('text/plain').send('');
+    const webUrl = list[Math.floor(Math.random()*list.length)];
+    const appUrl = /lite/i.test(label) ? makeLiteOpenUrl(webUrl) : makeTikTokAppUrl(webUrl);
+    return res.type('text/plain').send(appUrl || webUrl);
+  } catch(e) {
+    return res.status(500).type('text/plain').send('');
+  }
+}
+app.get('/api/text/RandomTiktok', (req,res)=>randomVideoText(req,res,'TIKTOK_60_SOURCE_URL','TikTok 60p'));
+app.get('/api/text/RandomTiktok60', (req,res)=>randomVideoText(req,res,'TIKTOK_60_SOURCE_URL','TikTok 60p'));
+app.get('/api/text/RandomTiktok180', (req,res)=>randomVideoText(req,res,'TIKTOK_180_SOURCE_URL','TikTok 180p'));
+app.get('/api/text/RandomTiktok10', (req,res)=>randomVideoText(req,res,'TIKTOK_10_SOURCE_URL','TikTok 10p'));
+app.get('/api/text/RandomTiktokLite', (req,res)=>randomVideoText(req,res,'TIKTOK_LITE_60_SOURCE_URL','TikTok Lite 60p'));
+app.get('/api/text/RandomTiktokLite60', (req,res)=>randomVideoText(req,res,'TIKTOK_LITE_60_SOURCE_URL','TikTok Lite 60p'));
+app.get('/api/text/RandomTiktokLite180', (req,res)=>randomVideoText(req,res,'TIKTOK_LITE_180_SOURCE_URL','TikTok Lite 180p'));
+app.get('/api/text/RandomTiktokLite10', (req,res)=>randomVideoText(req,res,'TIKTOK_LITE_10_SOURCE_URL','TikTok Lite 10p'));
+app.get('/api/text/RandomTiktoklite', (req,res)=>randomVideoText(req,res,'TIKTOK_LITE_60_SOURCE_URL','TikTok Lite 60p'));
+app.get('/api/text/RandomTiktoklite60', (req,res)=>randomVideoText(req,res,'TIKTOK_LITE_60_SOURCE_URL','TikTok Lite 60p'));
+app.get('/api/text/RandomTiktoklite180', (req,res)=>randomVideoText(req,res,'TIKTOK_LITE_180_SOURCE_URL','TikTok Lite 180p'));
+app.get('/api/text/RandomTiktoklite10', (req,res)=>randomVideoText(req,res,'TIKTOK_LITE_10_SOURCE_URL','TikTok Lite 10p'));
+
 app.get('/r/RandomTiktok', (req,res)=>randomVideoRedirect(req,res,'TIKTOK_60_SOURCE_URL','TikTok 60p'));
 app.get('/r/RandomTiktok60', (req,res)=>randomVideoRedirect(req,res,'TIKTOK_60_SOURCE_URL','TikTok 60p'));
 app.get('/r/RandomTiktok180', (req,res)=>randomVideoRedirect(req,res,'TIKTOK_180_SOURCE_URL','TikTok 180p'));

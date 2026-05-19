@@ -49,3 +49,27 @@
 /* V33: chữ và nút to, đậm hơn để dễ nhìn trên điện thoại */
 body{font-size:17px;font-weight:650}.hero h1{font-size:38px;font-weight:950}.eyebrow{font-size:14px;font-weight:950}.card h2{font-size:21px;font-weight:950}.btn{min-height:58px;font-size:17px;font-weight:950;border-radius:19px}.btn.huge-btn{min-height:64px;font-size:19px}.quick span{font-size:15px;font-weight:950}.quick{min-height:92px}.field label,label{font-size:15px;font-weight:950}input,textarea,select{font-size:17px;font-weight:700;min-height:54px}.copy-row button{width:58px;font-size:21px}.bottom-nav a{font-size:12px;font-weight:950}.bottom-nav b{font-size:22px}.list-item{font-size:16px;font-weight:750}.muted,.hint{font-size:14px;font-weight:700}.otpcode,.otpbox b{font-size:30px;font-weight:950}.shortcut-hero-box{padding:16px;border-radius:20px;background:#f7fbff;border:1px solid var(--line);margin:12px 0;font-size:16px;line-height:1.55}.big-result{font-size:24px;font-weight:950;text-align:center}
 @media(max-width:420px){.hero h1{font-size:32px}.btn{font-size:16px;min-height:54px}.btn.huge-btn{font-size:17px}.quick{min-height:82px}}
+
+
+/* V35: toàn bộ nút cùng tông xanh đậm */
+:root{--primary:#0b5ed7;--primary2:#084298;--soft:#eaf2ff;}
+.btn,.btn.primary,.btn.soft,.btn.danger,button.wide,
+.mini-send,.mini-copy,.row-send,.row-copy,.input-copy,.input-paste,
+.smallbtn,.copy-row button,.otpbox button,.sim-inline-actions .mini-copy,
+.sim-inline-actions .smallbtn{
+  background:linear-gradient(135deg,#0b5ed7,#084298)!important;
+  color:#fff!important;
+  border:0!important;
+  box-shadow:0 12px 24px rgba(8,66,152,.22)!important;
+  font-weight:950!important;
+}
+.quick{color:#084298!important;font-weight:950!important;border-color:#c8dcff!important;}
+.quick.danger{color:#084298!important;}
+.bottom-nav a.on{background:linear-gradient(135deg,#0b5ed7,#084298)!important;color:#fff!important;}
+.bottom-nav a.on b,.bottom-nav a.on span{color:#fff!important;}
+.row-remove,.input-clear{
+  background:linear-gradient(135deg,#0b5ed7,#084298)!important;
+  color:#fff!important;
+  border:0!important;
+  box-shadow:0 10px 20px rgba(8,66,152,.18)!important;
+}

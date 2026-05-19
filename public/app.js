@@ -66,6 +66,16 @@ function parseUser2faInput(){
   if(parsed.secret) secret.value=parsed.secret;
   updateUser2faOtp();
 }
+function syncCombinedFromFields(){
+  const combined=document.getElementById('u2faCombined');
+  const user=document.getElementById('u2faUser');
+  const secret=document.getElementById('u2faSecret');
+  if(!combined||!user||!secret)return;
+  const u=user.value.trim();
+  const s=secret.value.trim().replace(/\s+/g,'').toUpperCase();
+  if(s && secret.value!==s) secret.value=s;
+  if(u && s) combined.value=u+'|'+s;
+}
 async function updateUser2faOtp(){
   const sec=document.getElementById('u2faSecret')?.value.trim()||'';
   const box=document.getElementById('u2faLiveOtp');
@@ -73,7 +83,11 @@ async function updateUser2faOtp(){
   if(!sec){ box.textContent='------'; return; }
   try{ const r=await fetch('/api/otp?secret='+encodeURIComponent(sec)); const d=await r.json(); box.textContent=d.otp||'------'; }catch{ box.textContent='------'; }
 }
-document.addEventListener('input',e=>{ if(e.target&&e.target.id==='u2faCombined') parseUser2faInput(); if(e.target&&e.target.id==='u2faSecret') updateUser2faOtp(); });
+document.addEventListener('input',e=>{
+  if(e.target&&e.target.id==='u2faCombined') parseUser2faInput();
+  if(e.target&&e.target.id==='u2faUser'){ syncCombinedFromFields(); }
+  if(e.target&&e.target.id==='u2faSecret'){ syncCombinedFromFields(); updateUser2faOtp(); }
+});
 
 setInterval(()=>{tickOtpCountdown(); updateUser2faOtp();},500);tickOtpCountdown();
 

@@ -1,0 +1,9 @@
+{
+  "name": "quangfun-complete-v9",
+  "version": "9.0.0",
+  "description": "QuangFun mobile app with account queue, 2FA countdown and Grizzly SIM OTP",
+  "main": "server.js",
+  "scripts": {"start":"node server.js"},
+  "dependencies": {"express":"^4.18.2","otplib":"^12.0.1"},
+  "engines": {"node": ">=18"}
+}

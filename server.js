@@ -1,6 +1,7 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { authenticator } = require('otplib');
 
 const app = express();
@@ -30,7 +31,7 @@ const files = {
 const defaults = {
   accounts: [], used: [], videos: [], links: [], user2fa: [], logs: [], iphoneQueue: [],
   settings: { mailMethod:'OAuth2', icloudEmail:'', icloudPassword:'', showVideos:true, showAccount:true, showEmail:true, showIcloud:true, zaloUrl:'/zalo.jpg', iphoneToolUrl:'http://127.0.0.1:5799/api/rename-device', passwordEnabled:false, accessPassword:'zx' },
-  sim: { apiKey:'', service:'lf', country:'10', active: [] },
+  sim: { apiKey:'', service:'lf', country:'10', active: [], activeByClient: {} },
   domainSettings: {},
   domainSim: {},
   currentPicks: {}
@@ -69,6 +70,27 @@ function parseCookie(req){
   });
   return out;
 }
+
+function safeClientId(v){ return /^[a-zA-Z0-9_-]{12,80}$/.test(String(v||'')); }
+function getClientId(req, res){
+  const ck = parseCookie(req);
+  let id = ck.qf_client;
+  if (!safeClientId(id)) {
+    id = (crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2)));
+    if (res) res.cookie('qf_client', id, { maxAge: 365*24*60*60*1000, httpOnly: true, sameSite: 'Lax' });
+  }
+  return id;
+}
+function getClientActive(s, clientId){
+  if (!s.activeByClient || typeof s.activeByClient !== 'object') s.activeByClient = {};
+  return Array.isArray(s.activeByClient[clientId]) ? s.activeByClient[clientId] : [];
+}
+function setClientActive(s, clientId, list){
+  if (!s.activeByClient || typeof s.activeByClient !== 'object') s.activeByClient = {};
+  s.activeByClient[clientId] = Array.isArray(list) ? list : [];
+  // Không dùng s.active chung nữa để tránh các máy cùng domain nhìn thấy số của nhau.
+  s.active = [];
+}
 function isAuthed(req){
   const s = domainSettings(req);
   if (!s.passwordEnabled) return true;
@@ -79,7 +101,7 @@ app.use((req,res,next)=>{
   // API/phím tắt video phải công khai để iPhone Shortcut gọi được dù domain bật mật khẩu.
   const publicPaths = [
     '/Login', '/Login/Logout', '/app.css', '/app.js', '/favicon.ico',
-    '/api/otp', '/api/RandomTiktok', '/api/randomtiktok', '/api/text/',
+    '/api/otp', '/api/sim/status/', '/api/RandomTiktok', '/api/randomtiktok', '/api/text/',
     '/r/RandomTiktok', '/r/randomtiktok', '/Shortcut/', '/Auto/',
     // iPhone Tool cần đọc hàng chờ đổi tên ngay cả khi domain bật mật khẩu.
     '/IphoneTool/'
@@ -845,6 +867,7 @@ const COUNTRY_DIAL = Object.fromEntries(Object.entries(COUNTRY_META).map(([k,v])
 function normalizeSimStore(req){
   const s = domainSim(req);
   if (!Array.isArray(s.active)) s.active = [];
+  if (!s.activeByClient || typeof s.activeByClient !== 'object') s.activeByClient = {};
   if (!s.service) s.service = 'lf';
   if (!s.country) s.country = '10';
   writeDomainSim(req, s);
@@ -996,7 +1019,8 @@ function simSelect(name, value, options, prices = {}){
 
 app.get('/thue-otp-sim', async (req,res)=>{
   const { s, balance, services, countries, prices } = await simContext(req);
-  const active = Array.isArray(s.active) ? s.active : [];
+  const clientId = getClientId(req, res);
+  const active = getClientActive(s, clientId);
   const showConfig = req.query.config === '1' || !s.apiKey;
   const currentService = serviceName(s.service, services);
   const currentCountry = countryLabel(s.country, countryName(s.country, countries), prices);
@@ -1016,13 +1040,13 @@ app.post('/thue-otp-sim/settings',(req,res)=>{
 });
 app.post('/sim/get-number', async (req,res)=>{
   const s=normalizeSimStore(req);
+  const clientId = getClientId(req, res);
   if(!s.apiKey) return res.redirect('/thue-otp-sim');
   try{
     const t=(await grizzly('getNumber',{api_key:s.apiKey, service:s.service, country:s.country})).text;
     const n=parseNumberResponse(t);
     if(n.ok){
-      s.active = Array.isArray(s.active) ? s.active : [];
-      s.active = [{id:n.id, number:n.number, service:s.service, country:s.country, createdAt:new Date().toISOString()}];
+      setClientActive(s, clientId, [{id:n.id, number:n.number, service:s.service, country:s.country, clientId, createdAt:new Date().toISOString()}]);
       writeDomainSim(req,s);
       return res.redirect('/thue-otp-sim?rented=1');
     }
@@ -1040,15 +1064,17 @@ app.get('/api/sim/status/:id', async (req,res)=>{
 });
 app.get('/sim/cancel/:id', async (req,res)=>{
   const s=normalizeSimStore(req);
+  const clientId = getClientId(req, res);
   if(s.apiKey){ try{ await grizzly('setStatus',{api_key:s.apiKey, id:req.params.id, status:'8'}); }catch{} }
-  s.active=(s.active||[]).filter(x=>String(x.id)!==String(req.params.id));
+  setClientActive(s, clientId, getClientActive(s, clientId).filter(x=>String(x.id)!==String(req.params.id)));
   writeDomainSim(req,s);
   res.redirect('/thue-otp-sim');
 });
 app.get('/sim/complete/:id', async (req,res)=>{
   const s=normalizeSimStore(req);
+  const clientId = getClientId(req, res);
   if(s.apiKey){ try{ await grizzly('setStatus',{api_key:s.apiKey, id:req.params.id, status:'6'}); }catch{} }
-  s.active=(s.active||[]).filter(x=>String(x.id)!==String(req.params.id));
+  setClientActive(s, clientId, getClientActive(s, clientId).filter(x=>String(x.id)!==String(req.params.id)));
   writeDomainSim(req,s);
   res.redirect('/thue-otp-sim');
 });

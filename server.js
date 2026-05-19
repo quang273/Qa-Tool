@@ -25,17 +25,40 @@ app.use(express.static(pub));
 
 const files = {
   accounts: 'accounts.json', used: 'used-accounts.json', videos: 'videos.json', links: 'links.json',
-  settings: 'settings.json', user2fa: 'user2fa.json', sim: 'sim-otp-settings.json', logs: 'logs.json', iphoneQueue: 'iphone-tool-queue.json'
+  settings: 'settings.json', user2fa: 'user2fa.json', sim: 'sim-otp-settings.json', logs: 'logs.json', iphoneQueue: 'iphone-tool-queue.json', domainSettings: 'domain-settings.json', domainSim: 'domain-sim-settings.json'
 };
 const defaults = {
   accounts: [], used: [], videos: [], links: [], user2fa: [], logs: [], iphoneQueue: [],
   settings: { mailMethod:'OAuth2', icloudEmail:'', icloudPassword:'', showVideos:true, showAccount:true, showEmail:true, showIcloud:true, zaloUrl:'https://auraesoftware.com/zalo.jpg', iphoneToolUrl:'http://127.0.0.1:5799/api/rename-device', passwordEnabled:false, accessPassword:'zx' },
-  sim: { apiKey:'', service:'lf', country:'vn', active: [] }
+  sim: { apiKey:'', service:'lf', country:'10', active: [] },
+  domainSettings: {},
+  domainSim: {}
 };
 function jpath(k){ return path.join(DATA_DIR, files[k]); }
 function read(k){ try { return JSON.parse(fs.readFileSync(jpath(k),'utf8')); } catch { return structuredClone(defaults[k]); } }
 function write(k,v){ fs.writeFileSync(jpath(k), JSON.stringify(v,null,2), 'utf8'); }
 for (const k of Object.keys(files)) if (!fs.existsSync(jpath(k))) write(k, defaults[k]);
+
+function cloneDefault(k){ return JSON.parse(JSON.stringify(defaults[k])); }
+function domainKey(req){
+  return String((req.headers['x-forwarded-host'] || req.headers.host || 'default')).split(',')[0].split(':')[0].trim().toLowerCase() || 'default';
+}
+function readDomain(req, storeKey, defaultKey){
+  const all = read(storeKey);
+  const key = domainKey(req);
+  const base = cloneDefault(defaultKey);
+  return { ...base, ...(all[key] || {}) };
+}
+function writeDomain(req, storeKey, defaultKey, value){
+  const all = read(storeKey);
+  const key = domainKey(req);
+  all[key] = { ...cloneDefault(defaultKey), ...(value || {}) };
+  write(storeKey, all);
+}
+function domainSettings(req){ return readDomain(req, 'domainSettings', 'settings'); }
+function writeDomainSettings(req, value){ writeDomain(req, 'domainSettings', 'settings', value); }
+function domainSim(req){ return readDomain(req, 'domainSim', 'sim'); }
+function writeDomainSim(req, value){ writeDomain(req, 'domainSim', 'sim', value); }
 
 function parseCookie(req){
   const out = {};
@@ -46,12 +69,12 @@ function parseCookie(req){
   return out;
 }
 function isAuthed(req){
-  const s = read('settings');
+  const s = domainSettings(req);
   if (!s.passwordEnabled) return true;
   return parseCookie(req).qf_auth === '1';
 }
 app.use((req,res,next)=>{
-  const s = read('settings');
+  const s = domainSettings(req);
   if (!s.passwordEnabled) return next();
   const open = req.path === '/Login' || req.path === '/Login/Logout' || req.path.startsWith('/app.') || req.path.startsWith('/api/otp');
   if (open || isAuthed(req)) return next();
@@ -147,7 +170,7 @@ function nav(active='home'){
   return `<nav class="bottom-nav">${items.map(([href,label,ic,key])=>`<a class="${active===key?'on':''}" href="${href}"><b>${ic}</b><span>${label}</span></a>`).join('')}</nav>`;
 }
 function layout(title, body, active='home'){
-  return `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0f6bff"><title>${esc(title)}</title><link rel="stylesheet" href="/app.css"></head><body><div class="bg"></div><main class="app"><header class="hero"><div><p class="eyebrow">QuangFun Local</p><h1>${esc(title)}</h1><span class="sub">Giao diện mobile • dữ liệu lưu trong máy</span></div><a class="pill" href="/">Online</a></header>${body}</main>${nav(active)}<script src="/app.js"></script></body></html>`;
+  return `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0f6bff"><title>${esc(title)}</title><link rel="stylesheet" href="/app.css"></head><body><div class="bg"></div><main class="app"><header class="hero"><div><p class="eyebrow" id="siteDomain">${esc(process.env.SITE_NAME || "")}</p><h1>${esc(title)}</h1></div><a class="pill" href="/">Online</a></header>${body}</main>${nav(active)}<script src="/app.js"></script></body></html>`;
 }
 function card(title, content, extra=''){ return `<section class="card ${extra}"><h2>${title}</h2>${content}</section>`; }
 function btn(href, text, cls='primary'){ return `<a class="btn ${cls}" href="${href}">${text}</a>`; }
@@ -170,7 +193,7 @@ function getAccountFromQuery(req){
 }
 
 app.get('/', (req,res)=>{
-  const settings = read('settings');
+  const settings = domainSettings(req);
   const acc = getAccountFromQuery(req);
   const videos = read('videos');
   const links = read('links');
@@ -196,13 +219,13 @@ app.get('/Home/GetAccount', (req,res)=>{
 });
 app.get('/Home/MarkUsed', (req,res)=>{ res.redirect('/'); });
 app.get('/Login', (req,res)=>{
-  const s = read('settings');
+  const s = domainSettings(req);
   if (!s.passwordEnabled) return res.redirect('/');
   const body = card('🔒 Nhập mật khẩu truy cập', `<form method="post"><label>Mật khẩu</label><input type="password" name="password" placeholder="Nhập mật khẩu"><button class="btn primary wide">🔓 Vào web</button></form>${req.query.err?' <div class="notice warn">Sai mật khẩu.</div>':''}`);
   res.send(layout('Đăng nhập', body, 'settings'));
 });
 app.post('/Login', (req,res)=>{
-  const s = read('settings');
+  const s = domainSettings(req);
   if (String(req.body.password || '') === String(s.accessPassword || 'zx')) {
     res.setHeader('Set-Cookie','qf_auth=1; Path=/; Max-Age=604800; SameSite=Lax');
     return res.redirect('/');
@@ -257,7 +280,7 @@ app.post('/IphoneTool/SendName', async (req,res)=>{
   const mode = String(req.body.mode || 'user').trim();
   const slot = String(req.body.slot || req.query.slot || '').trim();
   if (!name) return res.json({status:false, message:'Tên gửi sang iPhone Tool đang trống.'});
-  const s = read('settings');
+  const s = domainSettings(req);
   const payload = { name, mode, slot, createdAt: new Date().toISOString() };
   try {
     const r = await fetch(s.iphoneToolUrl || 'http://127.0.0.1:5799/api/rename-device', {
@@ -278,7 +301,7 @@ app.get('/IphoneTool/Queue',(req,res)=>res.json(read('iphoneQueue')));
 app.post('/IphoneTool/PopQueue',(req,res)=>{ const q=read('iphoneQueue'); const item=q.shift()||null; write('iphoneQueue',q); res.json({status:true,item}); });
 
 app.get('/Settings', (req,res)=>{
- const s=read('settings');
+ const s=domainSettings(req);
  const body = `<div class="quick-grid"><a class="quick" href="/Video/AddVideo">🎬<span>Thêm Video</span></a><a class="quick" href="/Link/AddLink">🔗<span>Thêm Link</span></a><a class="quick" href="/Account/AddAccount">👤<span>Thêm Tài khoản</span></a><a class="quick" href="/otp">🔐<span>User | 2FA</span></a><a class="quick" href="/thue-otp-sim">📱<span>Thuê OTP SIM</span></a></div>`+
  card('📬 Cài đặt đọc mail', `<form method="post" action="/Settings/mail"><label>Phương thức đọc mail</label><select name="mailMethod"><option ${s.mailMethod==='OAuth2'?'selected':''}>OAuth2</option><option ${s.mailMethod==='Graph API'?'selected':''}>Graph API</option><option ${s.mailMethod==='Mail TM'?'selected':''}>Mail TM</option><option ${s.mailMethod==='FakeEmail'?'selected':''}>FakeEmail</option></select><button class="btn primary wide">💾 Lưu cài đặt Mail</button></form>`)+
  card('📲 Kết nối iPhone Tool', `<form method="post" action="/Settings/iphone-tool"><label>Địa chỉ nhận lệnh của iPhone Tool</label><input name="iphoneToolUrl" value="${esc(s.iphoneToolUrl || 'http://127.0.0.1:5799/api/rename-device')}"><small class="muted">Mặc định dùng tool chạy trên máy tính. Nếu tool chưa mở, web sẽ lưu vào hàng chờ.</small><button class="btn primary wide">💾 Lưu kết nối Tool</button></form>`)+
@@ -287,11 +310,11 @@ app.get('/Settings', (req,res)=>{
  card('👁️ Cài đặt hiển thị', `<form method="post" action="/Settings/display">${[['showVideos','Danh sách Video'],['showAccount','Thông tin Tài khoản'],['showEmail','Email/Link nhanh'],['showIcloud','Thông tin iCloud']].map(([k,l])=>`<label class="switch"><span>${l}</span><input type="checkbox" name="${k}" ${s[k]?'checked':''}></label>`).join('')}<button class="btn primary wide">💾 Lưu cài đặt hiển thị</button></form>`);
  res.send(layout('Cài đặt hệ thống', body, 'settings'));
 });
-app.post('/Settings/mail',(req,res)=>{ const s=read('settings'); s.mailMethod=req.body.mailMethod||s.mailMethod; write('settings',s); res.redirect('/Settings'); });
-app.post('/Settings/iphone-tool',(req,res)=>{ const s=read('settings'); s.iphoneToolUrl=req.body.iphoneToolUrl||'http://127.0.0.1:5799/api/rename-device'; write('settings',s); res.redirect('/Settings'); });
-app.post('/Settings/security',(req,res)=>{ const s=read('settings'); s.passwordEnabled=!!req.body.passwordEnabled; const pw=String(req.body.accessPassword||'').trim(); if(pw) s.accessPassword=pw; if(!s.accessPassword) s.accessPassword='zx'; write('settings',s); if(!s.passwordEnabled){ res.setHeader('Set-Cookie','qf_auth=; Path=/; Max-Age=0; SameSite=Lax'); } res.redirect('/Settings'); });
-app.post('/Settings/icloud',(req,res)=>{ const s=read('settings'); s.icloudEmail=req.body.icloudEmail||''; s.icloudPassword=req.body.icloudPassword||''; write('settings',s); res.redirect('/Settings'); });
-app.post('/Settings/display',(req,res)=>{ const s=read('settings'); ['showVideos','showAccount','showEmail','showIcloud'].forEach(k=>s[k]=!!req.body[k]); write('settings',s); res.redirect('/Settings'); });
+app.post('/Settings/mail',(req,res)=>{ const s=domainSettings(req); s.mailMethod=req.body.mailMethod||s.mailMethod; writeDomainSettings(req,s); res.redirect('/Settings'); });
+app.post('/Settings/iphone-tool',(req,res)=>{ const s=domainSettings(req); s.iphoneToolUrl=req.body.iphoneToolUrl||'http://127.0.0.1:5799/api/rename-device'; writeDomainSettings(req,s); res.redirect('/Settings'); });
+app.post('/Settings/security',(req,res)=>{ const s=domainSettings(req); s.passwordEnabled=!!req.body.passwordEnabled; const pw=String(req.body.accessPassword||'').trim(); if(pw) s.accessPassword=pw; if(!s.accessPassword) s.accessPassword='zx'; writeDomainSettings(req,s); if(!s.passwordEnabled){ res.setHeader('Set-Cookie','qf_auth=; Path=/; Max-Age=0; SameSite=Lax'); } res.redirect('/Settings'); });
+app.post('/Settings/icloud',(req,res)=>{ const s=domainSettings(req); s.icloudEmail=req.body.icloudEmail||''; s.icloudPassword=req.body.icloudPassword||''; writeDomainSettings(req,s); res.redirect('/Settings'); });
+app.post('/Settings/display',(req,res)=>{ const s=domainSettings(req); ['showVideos','showAccount','showEmail','showIcloud'].forEach(k=>s[k]=!!req.body[k]); writeDomainSettings(req,s); res.redirect('/Settings'); });
 
 app.get('/Account/AddAccount',(req,res)=>{ const accounts=read('accounts'); const body=card('👤 Thêm tài khoản', `<form method="post"><label>Nhập danh sách tài khoản, mỗi dòng một tài khoản</label><textarea name="accounts" rows="12" placeholder="Mỗi dòng một tài khoản
 user|pass|secret2FA
@@ -610,12 +633,12 @@ const COUNTRY_META = {
   '213': {name:'Guernsey', dial:'+44'},
 };
 const COUNTRY_DIAL = Object.fromEntries(Object.entries(COUNTRY_META).map(([k,v])=>[k,v.dial]));
-function normalizeSimStore(){
-  const s = read('sim');
+function normalizeSimStore(req){
+  const s = domainSim(req);
   if (!Array.isArray(s.active)) s.active = [];
   if (!s.service) s.service = 'lf';
   if (!s.country) s.country = '10';
-  write('sim', s);
+  writeDomainSim(req, s);
   return s;
 }
 async function grizzly(action, params = {}){
@@ -724,8 +747,8 @@ function parseSmsStatus(t){
   if (/STATUS_CANCEL/i.test(s)) return { status:'cancel', code:'', raw:s };
   return { status:'unknown', code:'', raw:s };
 }
-async function simContext(){
-  const s = normalizeSimStore();
+async function simContext(req){
+  const s = normalizeSimStore(req);
   let balance = 'Chưa nhập API key';
   let services = FALLBACK_SERVICES;
   let countries = FALLBACK_COUNTRIES;
@@ -763,21 +786,27 @@ function simSelect(name, value, options, prices = {}){
 
 
 app.get('/thue-otp-sim', async (req,res)=>{
-  const { s, balance, services, countries, prices } = await simContext();
+  const { s, balance, services, countries, prices } = await simContext(req);
   const active = Array.isArray(s.active) ? s.active : [];
-  const activeHtml = active.length ? `<div class="list">${active.map(a=>`<div class="list-item sim-session"><div class="sim-main"><b>${esc(a.number)}</b><small class="muted">ID: ${esc(a.id)} • ${esc(serviceName(a.service, services))} • ${esc(countryLabel(a.country, countryName(a.country, countries), prices))}</small><div class="otpbox sim-otpbox"><div><small>OTP SMS</small><b class="sim-code" data-id="${esc(a.id)}">------</b></div><span class="sim-status" data-id="${esc(a.id)}">Đang chờ SMS...</span><button onclick="copyText(document.querySelector('.sim-code[data-id=\"${esc(a.id)}\"]').textContent)">📋</button></div></div><div class="sim-actions"><button class="mini-copy" onclick="copyText('${esc(localPhoneNumber(a.number, a.country))}')">📋 Số</button><a class="btn soft smallbtn" href="/sim/complete/${urlEnc(a.id)}">Hoàn tất</a><a class="btn danger smallbtn" href="/sim/cancel/${urlEnc(a.id)}">Hủy</a></div></div>`).join('')}</div>` : '<div class="empty">Chưa có phiên thuê số nào.</div>';
+  const showConfig = req.query.config === '1' || !s.apiKey;
+  const currentService = serviceName(s.service, services);
+  const currentCountry = countryLabel(s.country, countryName(s.country, countries), prices);
+  const activeHtml = active.length ? `<div class="list">${active.map(a=>`<div class="list-item sim-session"><div class="sim-main"><b>${esc(a.number)}</b><small class="muted">ID: ${esc(a.id)} • ${esc(serviceName(a.service, services))} • ${esc(countryLabel(a.country, countryName(a.country, countries), prices))}</small><div class="otpbox sim-otpbox"><div><small>OTP SMS</small><b class="sim-code" data-id="${esc(a.id)}">------</b></div><span class="sim-status" data-id="${esc(a.id)}">Đang chờ SMS...</span><button onclick="copyText(document.querySelector('.sim-code[data-id="${esc(a.id)}"]').textContent)">📋</button></div></div><div class="sim-actions"><button class="mini-copy" onclick="copyText('${esc(localPhoneNumber(a.number, a.country))}')">📋 Số</button><a class="btn soft smallbtn" href="/sim/complete/${urlEnc(a.id)}">Hoàn tất</a><a class="btn danger smallbtn" href="/sim/cancel/${urlEnc(a.id)}">Hủy</a></div></div>`).join('')}</div>` : '<div class="empty">Chưa có phiên thuê số nào.</div>';
+  const configForm = showConfig
+    ? `<form method="post" action="/thue-otp-sim/settings"><label>API key GrizzlySMS</label><input name="apiKey" value="${esc(s.apiKey)}" placeholder="Nhập API key"><label>Dịch vụ</label>${simSelect('service', s.service, services)}<label>Quốc gia</label><input id="countrySearch" class="country-search" type="search" placeholder="Tìm quốc gia hoặc mã vùng, ví dụ: 84, 57, Vietnam, Colombia">${simSelect('country', s.country, countries, prices)}<button class="btn primary wide">💾 Lưu cấu hình</button><a class="btn soft wide" href="/thue-otp-sim">Ẩn cấu hình</a></form>`
+    : `<div class="sim-config-summary"><div class="field"><label>Cấu hình hiện tại</label><div class="stat">${esc(currentService)}<br><small>${esc(currentCountry)}</small></div></div><a class="btn soft wide" href="/thue-otp-sim?config=1">⚙️ Cấu hình</a></div>`;
   const body = card('💰 Số dư GrizzlySMS', `<div class="big-result">${esc(balance)}</div>`)+
-    card('📱 Thuê OTP SIM', `<form method="post" action="/thue-otp-sim/settings"><label>API key GrizzlySMS</label><input name="apiKey" value="${esc(s.apiKey)}" placeholder="Nhập API key"><label>Dịch vụ</label>${simSelect('service', s.service, services)}<label>Quốc gia</label><input id="countrySearch" class="country-search" type="search" placeholder="Tìm quốc gia hoặc mã vùng, ví dụ: 84, 57, Vietnam, Colombia"><small class="muted">Nhập mã vùng hoặc tên quốc gia để lọc nhanh danh sách.</small>${simSelect('country', s.country, countries, prices)}<button class="btn primary wide">💾 Lưu cấu hình</button></form><form id="simGetForm" method="post" action="/sim/get-number"><button id="simGetBtn" class="btn primary wide">📲 Lấy số điện thoại</button><div id="simGetLoading" class="notice" style="display:none">⏳ Đang lấy số điện thoại...</div></form>`)+
+    card('📱 Thuê OTP SIM', `${configForm}<form id="simGetForm" method="post" action="/sim/get-number"><button id="simGetBtn" class="btn primary wide">📲 Lấy số điện thoại</button><div id="simGetLoading" class="notice" style="display:none">⏳ Đang lấy số điện thoại...</div></form>`)+
     card('⏳ Phiên đang chờ SMS', activeHtml);
   res.send(layout('Thuê OTP SIM', body, 'sim'));
 });
 app.post('/thue-otp-sim/settings',(req,res)=>{
-  const old = normalizeSimStore();
-  write('sim',{...old, apiKey:req.body.apiKey||'', service:req.body.service||'lf', country:req.body.country||'10'});
+  const old = normalizeSimStore(req);
+  writeDomainSim(req,{...old, apiKey:req.body.apiKey||'', service:req.body.service||'lf', country:req.body.country||'10'});
   res.redirect('/thue-otp-sim');
 });
 app.post('/sim/get-number', async (req,res)=>{
-  const s=normalizeSimStore();
+  const s=normalizeSimStore(req);
   if(!s.apiKey) return res.redirect('/thue-otp-sim');
   try{
     const t=(await grizzly('getNumber',{api_key:s.apiKey, service:s.service, country:s.country})).text;
@@ -785,14 +814,14 @@ app.post('/sim/get-number', async (req,res)=>{
     if(n.ok){
       s.active = Array.isArray(s.active) ? s.active : [];
       if(!s.active.some(x=>String(x.id)===String(n.id))) s.active.unshift({id:n.id, number:n.number, service:s.service, country:s.country, createdAt:new Date().toISOString()});
-      write('sim',s);
+      writeDomainSim(req,s);
       return res.redirect('/thue-otp-sim?rented=1');
     }
     res.send(layout('Không thuê được số', card('⚠️ Kết quả API', `<div class="big-result">${esc(n.raw)}</div>${btn('/thue-otp-sim','Quay lại','soft')}`),'sim'));
   }catch(e){res.send(layout('Lỗi thuê số', card('Lỗi',esc(e.message)),'sim'));}
 });
 app.get('/api/sim/status/:id', async (req,res)=>{
-  const s=normalizeSimStore();
+  const s=normalizeSimStore(req);
   if(!s.apiKey) return res.json({status:false,message:'Chưa nhập API key'});
   try{
     const raw=(await grizzly('getStatus',{api_key:s.apiKey, id:req.params.id})).text;
@@ -801,17 +830,17 @@ app.get('/api/sim/status/:id', async (req,res)=>{
   }catch(e){res.json({status:false,message:e.message});}
 });
 app.get('/sim/cancel/:id', async (req,res)=>{
-  const s=normalizeSimStore();
+  const s=normalizeSimStore(req);
   if(s.apiKey){ try{ await grizzly('setStatus',{api_key:s.apiKey, id:req.params.id, status:'8'}); }catch{} }
   s.active=(s.active||[]).filter(x=>String(x.id)!==String(req.params.id));
-  write('sim',s);
+  writeDomainSim(req,s);
   res.redirect('/thue-otp-sim');
 });
 app.get('/sim/complete/:id', async (req,res)=>{
-  const s=normalizeSimStore();
+  const s=normalizeSimStore(req);
   if(s.apiKey){ try{ await grizzly('setStatus',{api_key:s.apiKey, id:req.params.id, status:'6'}); }catch{} }
   s.active=(s.active||[]).filter(x=>String(x.id)!==String(req.params.id));
-  write('sim',s);
+  writeDomainSim(req,s);
   res.redirect('/thue-otp-sim');
 });
 

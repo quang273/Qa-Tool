@@ -181,3 +181,12 @@ function filterCountryOptions(){
 }
 document.addEventListener('input',e=>{ if(e.target&&e.target.id==='countrySearch') filterCountryOptions(); });
 document.addEventListener('DOMContentLoaded',filterCountryOptions);
+
+
+document.addEventListener('DOMContentLoaded',()=>{
+  const el=document.getElementById('siteDomain');
+  if(el){
+    const h=(location.hostname||'').replace(/^www\./,'');
+    el.textContent=h || 'Localhost';
+  }
+});

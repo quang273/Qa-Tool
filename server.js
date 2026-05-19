@@ -80,7 +80,9 @@ app.use((req,res,next)=>{
   const publicPaths = [
     '/Login', '/Login/Logout', '/app.css', '/app.js', '/favicon.ico',
     '/api/otp', '/api/RandomTiktok', '/api/randomtiktok', '/api/text/',
-    '/r/RandomTiktok', '/r/randomtiktok', '/Shortcut/', '/Auto/'
+    '/r/RandomTiktok', '/r/randomtiktok', '/Shortcut/', '/Auto/',
+    // iPhone Tool cần đọc hàng chờ đổi tên ngay cả khi domain bật mật khẩu.
+    '/IphoneTool/'
   ];
   const isPublic = publicPaths.some(x => req.path === x || req.path.startsWith(x));
   if (!s.passwordEnabled || isPublic) return next();
@@ -204,7 +206,7 @@ function renderAccount(parts){
   const secret = get2faSecret(parts);
   const user2fa = (secret && parts[0]) ? `${parts[0]}|${secret}` : '';
   const otp = secret ? `<div class="otpbox"><div><b>OTP 2FA</b><small class="otp-remain">${remain()}s</small></div><div class="otpcode" data-secret="${esc(secret)}">${currentOtp(secret)}</div><button onclick="copyText(document.querySelector('.otpcode').textContent)">📋</button></div><button class="btn soft wide" type="button" data-send-tool="${esc(user2fa)}">🚀 Gửi USER|2FA sang iPhone Tool</button>` : '';
-  return `${hidden}${fields}<div id="toolSendResult"></div>${otp}<button class="btn primary wide" id="getCodeBtn">🔑 Get Code</button><div id="codeResult"></div>${btn('/Home/GetAccount','⬇️ Lấy tài khoản','soft')}${btn('/Home/MarkUsed','👥 Yêu cầu kích điểm','soft')}`;
+  return `${hidden}${fields}<div id="toolSendResult"></div>${otp}<button class="btn primary wide" id="getCodeBtn">🔑 Get Code</button><div id="codeResult"></div>${btn('/Home/GetAccount','⬇️ Lấy tài khoản','soft')}`;
 }
 function makePickId(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,10); }
 function getAccountFromQuery(req){

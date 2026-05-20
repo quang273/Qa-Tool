@@ -279,6 +279,31 @@ function findClientId(parts){
   // clientId là UUID; luôn tìm UUID ở bất kỳ vị trí nào, kể cả khi sau đó còn email phụ.
   return parts.find(isUuidPart) || '';
 }
+
+function parseHotmailOAuth(raw, parts){
+  raw = String(raw || '').trim();
+  parts = Array.isArray(parts) ? parts.map(x=>String(x||'').trim()).filter(Boolean) : splitAccountLine(raw);
+  const emails = [];
+  const emailRe = /[A-Za-z0-9._%+-]+@(hotmail|outlook|live|msn)\.[A-Za-z]{2,}/ig;
+  let m;
+  while ((m = emailRe.exec(raw))) emails.push(m[0]);
+  const email = emails[0] || findEmail(parts);
+  let token = '';
+  let clientId = '';
+  // Chuẩn OAuth2: ...|M.C516...$$|uuid|email_phu. Bắt token từ M. đến ngay trước UUID.
+  const tokenUuidRe = /(M\.[^\s|]+)\|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+  const tm = raw.match(tokenUuidRe);
+  if (tm) { token = tm[1]; clientId = tm[2]; }
+  if (!token) token = findToken(parts);
+  if (!clientId) clientId = findClientId(parts);
+  // Nếu raw bị dán từ sheet có số thứ tự/user/handle ở trước, không dùng vị trí cố định.
+  // PassMail chỉ để hiển thị/debug, refresh token không cần pass.
+  let pass = '';
+  const idx = parts.findIndex(p => String(p).toLowerCase() === String(email).toLowerCase());
+  if (idx >= 0 && parts[idx+1] && !/^M\./i.test(parts[idx+1]) && !isUuidPart(parts[idx+1]) && !isEmailPart(parts[idx+1])) pass = parts[idx+1];
+  return { email, pass, token, clientId };
+}
+
 function extractCode(text){ const m = String(text||'').match(/(?<!\d)(\d{6})(?!\d)/); return m ? m[1] : ''; }
 function currentOtp(secret){
   try { return authenticator.generate(String(secret || '').replace(/\s/g,'')); } catch { return ''; }
@@ -516,9 +541,11 @@ app.get('/Login/Logout', (req,res)=>{ res.setHeader('Set-Cookie','qf_auth=; Path
 app.post('/Login/Logout', (req,res)=>{ res.setHeader('Set-Cookie','qf_auth=; Path=/; Max-Age=0; SameSite=Lax'); res.redirect('/Login'); });
 
 app.post('/Home/GetCode', async (req,res)=>{
-  const parts = splitAccountLine(req.body.raw || '');
+  const rawInput = String(req.body.raw || '');
+  const parts = splitAccountLine(rawInput);
   const type = classify(parts);
-  const email = findEmail(parts);
+  const hotmailOAuth = parseHotmailOAuth(rawInput, parts);
+  const email = hotmailOAuth.email || findEmail(parts);
   if (type === '2fa') { const secret = get2faSecret(parts); return res.json({ status:true, code: currentOtp(secret), content:'Mã 2FA hiện tại của bạn' }); }
   if (type === 'emailfake') {
     const openUrl = `https://vi.emailfake.com/${encodeURIComponent(email || '')}`;
@@ -530,9 +557,11 @@ app.post('/Home/GetCode', async (req,res)=>{
       return res.json({ status:false, message:'Chưa đọc được mã tự động. Bấm nút để mở Emailfake.', openUrl });
     } catch(e){ return res.json({ status:false, message:'Không truy cập được Emailfake từ server local.', openUrl }); }
   }
-  if (type === 'hotmail-token') {
-    // Không hiển thị token ra client; chỉ xử lý phía server nếu token/clientId hợp lệ.
-    const token = findToken(parts), clientId = findClientId(parts);
+  if (type === 'hotmail-token' || (hotmailOAuth.email && hotmailOAuth.token && hotmailOAuth.clientId)) {
+    // Không dựa vào Dữ liệu 1/2/3/4 vì có thể có STT, user, handle hoặc email phụ.
+    // Tự tìm email Microsoft + refresh token M.* + clientId UUID trong raw line.
+    const token = hotmailOAuth.token;
+    const clientId = hotmailOAuth.clientId;
     try {
       const code = await getMicrosoftTikTokCode(email, token, clientId);
       if (code) return res.json({ status:true, code, content:`${code} là mã gồm 6 chữ số của bạn` });

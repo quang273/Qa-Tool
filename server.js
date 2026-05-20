@@ -180,6 +180,8 @@ function cleanToolId(v){
   return String(v || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'default';
 }
 function currentToolId(req, res){
+  // Tool ID không còn lưu theo domain nữa để tránh máy A đổi mã làm toàn bộ web/máy khác đổi theo.
+  // Nếu cần gửi lệnh kiểu queue cũ, Tool ID chỉ lấy từ query/cookie của trình duyệt hiện tại.
   const ck = parseCookie(req);
   const fromQuery = req.query.toolId || req.query.tool || req.query.pc;
   if (fromQuery) {
@@ -188,8 +190,7 @@ function currentToolId(req, res){
     return id;
   }
   if (ck.qf_tool_id) return cleanToolId(ck.qf_tool_id);
-  const s = domainSettings(req);
-  return cleanToolId(s.renameToolId || 'default');
+  return 'default';
 }
 function cleanUdid(v){
   return String(v || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80);
@@ -273,13 +274,16 @@ function get2faSecret(parts){
   if (parts.length === 3 && is2faSecret(parts[2])) return parts[2];
   return '';
 }
+function isGmailMail(p){ return isEmailPart(p) && /@(gmail|googlemail)\./i.test(String(p||'')); }
+function isMailFakeCandidate(p){ return isEmailPart(p) && !isMicrosoftMail(p) && !isGmailMail(p); }
 function classify(parts){
   const joined = parts.join('|');
   const emails = parts.filter(p => /@/.test(p) && /\./.test(p));
   const lower = joined.toLowerCase();
-  if (lower.includes('emailfake@')) return 'emailfake';
   if (get2faSecret(parts)) return '2fa';
   if (emails.some(e => /hotmail|outlook|live|msn/i.test(e)) && parts.length >= 6) return 'hotmail-token';
+  // v67: email không phải Microsoft/Gmail là mailfake; Emailfake@/Phan9999/Phat3479 => EmailFake, còn lại thử Mail.tm rồi EmailFake.
+  if (emails.some(e => isMailFakeCandidate(e))) return 'mailfake-auto';
   return 'normal';
 }
 function isLongTokenPart(p){ return String(p || '').length > 80; }
@@ -335,6 +339,201 @@ function parseHotmailOAuth(raw, parts){
   const idx = parts.findIndex(p => String(p).toLowerCase() === String(email).toLowerCase());
   if (idx >= 0 && parts[idx+1] && !/^M\./i.test(parts[idx+1]) && !isUuidPart(parts[idx+1]) && !isEmailPart(parts[idx+1])) pass = parts[idx+1];
   return { email, pass, token, clientId };
+}
+
+
+function isMailFakeMarker(v){ return /^emailfake@?$/i.test(String(v||'').trim()); }
+function isForcedEmailFakePass(v){ return /^(Phan9999|Phat3479)$/i.test(String(v||'').trim()); }
+function isMailFakePassCandidate(v){
+  const s = String(v||'').trim();
+  if (!s) return false;
+  if (isEmailPart(s) || isUuidPart(s) || /^M\./i.test(s) || s.length > 120) return false;
+  if (/^@/.test(s)) return false;
+  if (/^\d+$/.test(s)) return false;
+  if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(s)) return false;
+  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) return false;
+  if (isMailFakeMarker(s)) return false;
+  return true;
+}
+function parseMailFakeAccount(raw, parts){
+  raw = String(raw || '').trim();
+  parts = Array.isArray(parts) ? parts.map(x=>String(x||'').trim()).filter(Boolean) : splitAccountLine(raw);
+  const emailIndex = parts.findIndex(isMailFakeCandidate);
+  if (emailIndex < 0) return { email:'', pass:'', forceEmailFake:false };
+  const email = parts[emailIndex];
+  let pass = '';
+
+  // Dạng email|pass hoặc email|pass|gmail phụ.
+  for (let i=emailIndex+1; i<parts.length; i++) {
+    const v = String(parts[i] || '').trim();
+    if (isMailFakePassCandidate(v)) { pass = v; break; }
+  }
+  // Dạng user pass email time Emailfake@, pass nằm trước email.
+  if (!pass) {
+    for (let i=emailIndex-1; i>=0; i--) {
+      const v = String(parts[i] || '').trim();
+      if (isMailFakePassCandidate(v)) { pass = v; break; }
+    }
+  }
+
+  const forceEmailFake = parts.some(isMailFakeMarker) || parts.some(isForcedEmailFakePass) || isForcedEmailFakePass(pass);
+  return { email, pass, forceEmailFake };
+}
+// Giữ alias cũ để không đụng các đoạn khác nếu còn gọi tên này.
+const parseMailTmAccount = parseMailFakeAccount;
+
+async function mailTmFetchJson(url, options={}){
+  const r = await fetch(url, {
+    ...options,
+    headers: {
+      'accept': 'application/json',
+      'content-type': 'application/json',
+      'user-agent': 'QuangFun-MailTM/1.0',
+      ...(options.headers || {})
+    }
+  });
+  const text = await r.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch {}
+  if (!r.ok) {
+    const detail = (json && (json.message || json.detail || json.title)) || text || `HTTP ${r.status}`;
+    const err = new Error(detail);
+    err.status = r.status;
+    throw err;
+  }
+  return json;
+}
+
+async function getMailTmToken(email, pass){
+  if (!email || !pass) throw new Error('thiếu email hoặc mật khẩu mailfake');
+  try {
+    const tj = await mailTmFetchJson('https://api.mail.tm/token', {
+      method:'POST',
+      body: JSON.stringify({ address: email, password: pass })
+    });
+    if (!tj || !tj.token) throw new Error('Mail.tm không trả token');
+    return tj.token;
+  } catch (e) {
+    // Một số mailfake theo chuẩn mail.tm cần tạo account trước nếu chưa tồn tại.
+    // Nếu account đã tồn tại thì tạo sẽ lỗi, sau đó vẫn báo lỗi token rõ ràng.
+    if (e.status === 404 || e.status === 401) {
+      try {
+        await mailTmFetchJson('https://api.mail.tm/accounts', {
+          method:'POST',
+          body: JSON.stringify({ address: email, password: pass })
+        });
+        const tj = await mailTmFetchJson('https://api.mail.tm/token', {
+          method:'POST',
+          body: JSON.stringify({ address: email, password: pass })
+        });
+        if (tj && tj.token) return tj.token;
+      } catch {}
+    }
+    throw new Error('Mail.tm token lỗi: ' + (e.message || e));
+  }
+}
+
+async function getMailTmTikTokCode(email, pass){
+  const token = await getMailTmToken(email, pass);
+  const auth = { authorization: `Bearer ${token}` };
+  const list = await mailTmFetchJson('https://api.mail.tm/messages?page=1', { headers: auth });
+  const items = Array.isArray(list?.['hydra:member']) ? list['hydra:member'] : (Array.isArray(list) ? list : []);
+  for (const msg of items.slice(0, 30)) {
+    const summary = [msg.from?.address, msg.from?.name, msg.subject, msg.intro].join(' ');
+    // Chỉ lấy code TikTok, không lấy code dịch vụ khác.
+    if (!isTikTokMailText(summary)) continue;
+    let detail = msg;
+    if (msg.id) {
+      try { detail = await mailTmFetchJson(`https://api.mail.tm/messages/${encodeURIComponent(msg.id)}`, { headers: auth }); } catch {}
+    }
+    const text = [
+      detail.from?.address, detail.from?.name, detail.subject, detail.intro,
+      Array.isArray(detail.text) ? detail.text.join(' ') : detail.text,
+      Array.isArray(detail.html) ? detail.html.join(' ') : detail.html
+    ].filter(Boolean).join(' ');
+    const code = extractTikTokCode(text || summary);
+    if (code) return code;
+  }
+  return '';
+}
+
+async function fetchText(url, options={}){
+  const r = await fetch(url, {
+    ...options,
+    headers: {
+      'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
+      'accept':'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      ...(options.headers || {})
+    }
+  });
+  const text = await r.text();
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return text;
+}
+
+function stripHtmlText(html){
+  return String(html||'')
+    .replace(/<script[\s\S]*?<\/script>/gi,' ')
+    .replace(/<style[\s\S]*?<\/style>/gi,' ')
+    .replace(/<[^>]+>/g,' ')
+    .replace(/&nbsp;/gi,' ')
+    .replace(/&amp;/gi,'&')
+    .replace(/&#(\d+);/g,(_,n)=>String.fromCharCode(Number(n)||32))
+    .replace(/\s+/g,' ')
+    .trim();
+}
+
+async function getEmailFakeTikTokCode(email){
+  email = String(email||'').trim();
+  if (!isEmailPart(email)) throw new Error('emailfake thiếu email');
+  const [local, domain] = email.split('@');
+  const candidates = [
+    `https://emailfake.com/${encodeURIComponent(email)}`,
+    `https://vi.emailfake.com/${encodeURIComponent(email)}`,
+    `https://emailfake.com/?email=${encodeURIComponent(email)}`,
+    `https://vi.emailfake.com/?email=${encodeURIComponent(email)}`,
+    `https://emailfake.com/${encodeURIComponent(local)}/${encodeURIComponent(domain)}`,
+    `https://vi.emailfake.com/${encodeURIComponent(local)}/${encodeURIComponent(domain)}`
+  ];
+  let lastErr = '';
+  for (const url of candidates) {
+    try {
+      const html = await fetchText(url);
+      const text = stripHtmlText(html);
+      const code = extractTikTokCode(text);
+      if (code) return { code, source:'emailfake', url };
+    } catch(e) { lastErr = e.message || String(e); }
+  }
+  return { code:'', source:'emailfake', error:lastErr };
+}
+
+async function getMailFakeTikTokCode(email, pass, opts={}){
+  const forceEmailFake = !!opts.forceEmailFake;
+
+  // Rule v67:
+  // - Có Emailfake@ hoặc pass Phan9999/Phat3479 => mặc định vi.emailfake.com / emailfake.
+  // - Còn lại thử Mail.tm trước, nếu không được mới thử EmailFake.
+  if (forceEmailFake) {
+    const ef = await getEmailFakeTikTokCode(email);
+    if (ef.code) return { ...ef, source:'emailfake' };
+    const err = new Error('EmailFake chưa thấy mail TikTok hoặc chưa thấy mã 6 số');
+    err.openUrl = ef.url || `https://vi.emailfake.com/${encodeURIComponent(email)}`;
+    throw err;
+  }
+
+  let mtErr = '';
+  try {
+    const code = await getMailTmTikTokCode(email, pass);
+    if (code) return { code, source:'mail.tm' };
+  } catch(e) { mtErr = e.message || String(e); }
+
+  const ef = await getEmailFakeTikTokCode(email);
+  if (ef.code) return { ...ef, source:'emailfake' };
+
+  const msg = [mtErr ? ('Mail.tm: ' + mtErr) : 'Mail.tm chưa thấy mã TikTok', 'EmailFake chưa thấy mã TikTok'].join(' | ');
+  const err = new Error(msg);
+  err.openUrl = ef.url || `https://vi.emailfake.com/${encodeURIComponent(email)}`;
+  throw err;
 }
 
 function extractCode(text){ const m = String(text||'').match(/(?<!\d)(\d{6})(?!\d)/); return m ? m[1] : ''; }
@@ -581,15 +780,13 @@ app.post('/Home/GetCode', async (req,res)=>{
   const hotmailOAuth = parseHotmailOAuth(rawInput, parts);
   const email = hotmailOAuth.email || findEmail(parts);
   if (type === '2fa') { const secret = get2faSecret(parts); return res.json({ status:true, code: currentOtp(secret), content:'Mã 2FA hiện tại của bạn' }); }
-  if (type === 'emailfake') {
-    const openUrl = `https://vi.emailfake.com/${encodeURIComponent(email || '')}`;
+  if (type === 'mailfake-auto') {
+    const mt = parseMailFakeAccount(rawInput, parts);
     try {
-      const r = await fetch(openUrl, { headers:{'user-agent':'Mozilla/5.0'} });
-      const html = await r.text();
-      const code = extractCode(html);
-      if (code) return res.json({ status:true, code, content:`${code} là mã gồm 6 chữ số của bạn`, openUrl });
-      return res.json({ status:false, message:'Chưa đọc được mã tự động. Bấm nút để mở Emailfake.', openUrl });
-    } catch(e){ return res.json({ status:false, message:'Không truy cập được Emailfake từ server local.', openUrl }); }
+      const result = await getMailFakeTikTokCode(mt.email, mt.pass, { forceEmailFake: mt.forceEmailFake });
+      if (result.code) return res.json({ status:true, code:result.code, content:`${result.code} là mã TikTok của bạn`, source: result.source });
+      return res.json({ status:false, message:'Mailfake chưa có mail TikTok mới hoặc chưa thấy mã 6 số.' });
+    } catch(e){ return res.json({ status:false, message:'Không lấy được Mailfake: ' + (e.message || e), openUrl:e.openUrl }); }
   }
   if (type === 'hotmail-token' || (hotmailOAuth.email && hotmailOAuth.token && hotmailOAuth.clientId)) {
     // Không dựa vào Dữ liệu 1/2/3/4 vì có thể có STT, user, handle hoặc email phụ.
@@ -602,7 +799,7 @@ app.post('/Home/GetCode', async (req,res)=>{
       return res.json({ status:false, message:'Không tìm thấy mã TikTok mới trong hộp thư hoặc token không còn hợp lệ.' });
     } catch (e) { return res.json({ status:false, message:'Không lấy được Hotmail: '+e.message }); }
   }
-  return res.json({ status:false, message:'Dạng tài khoản này chưa có nguồn đọc code. Nếu là Emailfake hãy thêm Emailfake@ ở cuối.' });
+  return res.json({ status:false, message:'Dạng tài khoản này chưa có nguồn đọc code. Hotmail dùng OAuth2; mailfake dùng dạng email|pass; chỉ lấy code TikTok.' });
 });
 async function refreshMicrosoftAccessToken(refreshToken, clientId){
   // Access token cho Microsoft Graph. Một số token cũ không có quyền Graph,
@@ -836,7 +1033,7 @@ app.get('/Settings', (req,res)=>{
  const s=domainSettings(req);
  const body = `<div class="quick-grid"><a class="quick" href="/Video/AddVideo">🎬<span>Thêm Video</span></a><a class="quick" href="/Link/AddLink">🔗<span>Thêm Link</span></a><a class="quick" href="/Account/AddAccount">👤<span>Thêm Tài khoản</span></a><a class="quick" href="/otp">🔐<span>User | 2FA</span></a><a class="quick" href="/thue-otp-sim">📱<span>Thuê OTP SIM</span></a></div>`+
  card('📬 Cài đặt đọc mail', `<form method="post" action="/Settings/mail"><label>Phương thức đọc mail</label><select name="mailMethod"><option ${s.mailMethod==='OAuth2'?'selected':''}>OAuth2</option><option ${s.mailMethod==='Graph API'?'selected':''}>Graph API</option><option ${s.mailMethod==='Mail TM'?'selected':''}>Mail TM</option><option ${s.mailMethod==='FakeEmail'?'selected':''}>FakeEmail</option></select><button class="btn primary wide">💾 Lưu cài đặt Mail</button></form>`)+
- card('📲 Kết nối iPhone Tool', `<form method="post" action="/Settings/iphone-tool"><label>Mã iPhone Tool của máy tính này</label><input name="renameToolId" value="${esc(s.renameToolId || 'default')}" placeholder="VD: PC-A, PC-B, MAY1"><small class="muted">Mỗi máy tính chạy iPhone Tool phải dùng một mã riêng. Web sẽ gửi lệnh đúng mã này để tránh đổi nhầm máy.</small><label>Địa chỉ nhận lệnh local của iPhone Tool</label><input name="iphoneToolUrl" value="${esc(s.iphoneToolUrl || 'http://127.0.0.1:5799/api/rename-device')}"><small class="muted">Có thể mở web với ?tool=PC-A để lưu mã tool riêng trên thiết bị đó.</small><label>UDID thiết bị đích trên trình duyệt này</label><input name="targetUdid" value="${esc(currentTargetUdid(req, res) || '')}" placeholder="Dán UDID iPhone cần đổi tên nếu máy tính cắm nhiều iPhone"><small class="muted">Nếu iPhone Tool cắm nhiều máy mà ô này trống, tool sẽ từ chối đổi tên để tránh đổi nhầm. Có thể mở web với ?tool=BonKem&udid=UDID.</small><button class="btn primary wide">💾 Lưu kết nối Tool</button></form>`)+
+ card('📲 iPhone Tool', `<div class="notice">Mã iPhone Tool giờ được tự sinh và lưu riêng trong phần mềm iPhone Tool trên từng máy tính. Web không lưu mã Tool theo domain nữa để tránh máy này đổi ảnh hưởng máy khác.</div>`)+
  card('⚡ Copy nhanh / Mail rút tiền', `<form method="post" action="/Settings/quick-copy"><label>Nội dung copy nhanh trong User | 2FA</label><textarea name="quickCopyText" rows="3" placeholder="Nhập bất kỳ nội dung nào cần copy nhanh">${esc(s.quickCopyText||'')}</textarea><label>Mail rút tiền gốc</label><input name="withdrawEmailBase" value="${esc(s.withdrawEmailBase||'')}" placeholder="zxcvb@gmail.com"><small class="muted">Ví dụ zxcvb@gmail.com sẽ random dạng z.xcvb+tiktoktool001@gmail.com.</small><button class="btn primary wide">💾 Lưu copy nhanh / mail rút tiền</button></form>`)+
  card('🔒 Bảo vệ bằng mật khẩu', `<form method="post" action="/Settings/security"><label class="switch"><span>Bật bảo vệ bằng mật khẩu</span><input type="checkbox" name="passwordEnabled" ${s.passwordEnabled?'checked':''}></label><label>Mật khẩu</label><input type="password" name="accessPassword" placeholder="Nhập mật khẩu mới (để trống để giữ nguyên)"><small class="muted">Mật khẩu hiện tại: ${esc(s.accessPassword || 'zx')}</small><button class="btn primary wide">💾 Lưu cài đặt bảo vệ</button></form>`)+
  card('☁️ Cài đặt iCloud', `<form method="post" action="/Settings/icloud"><label>Tài khoản iCloud</label><div class="copy-row"><input name="icloudEmail" value="${esc(s.icloudEmail)}"><button type="button" onclick="copyValue(this)">📋</button></div><label>Mật khẩu iCloud</label><div class="copy-row"><input name="icloudPassword" value="${esc(s.icloudPassword)}"><button type="button" onclick="copyValue(this)">📋</button></div><button class="btn primary wide">💾 Lưu thông tin iCloud</button></form>`)+
@@ -844,7 +1041,7 @@ app.get('/Settings', (req,res)=>{
  res.send(layout('Cài đặt hệ thống', body, 'settings'));
 });
 app.post('/Settings/mail',(req,res)=>{ const s=domainSettings(req); s.mailMethod=req.body.mailMethod||s.mailMethod; writeDomainSettings(req,s); res.redirect('/Settings'); });
-app.post('/Settings/iphone-tool',(req,res)=>{ const s=domainSettings(req); s.iphoneToolUrl=req.body.iphoneToolUrl||'http://127.0.0.1:5799/api/rename-device'; s.renameToolId=cleanToolId(req.body.renameToolId || s.renameToolId || 'default'); const targetUdid=cleanUdid(req.body.targetUdid || ''); writeDomainSettings(req,s); res.cookie('qf_tool_id', s.renameToolId, { maxAge: 365*24*60*60*1000, httpOnly:false, sameSite:'Lax' }); if(targetUdid) res.cookie('qf_rename_udid', targetUdid, { maxAge: 365*24*60*60*1000, httpOnly:false, sameSite:'Lax' }); else res.clearCookie('qf_rename_udid'); res.redirect('/Settings'); });
+app.post('/Settings/iphone-tool',(req,res)=>{ const toolId=cleanToolId(req.body.renameToolId || req.query.toolId || req.query.tool || 'default'); const targetUdid=cleanUdid(req.body.targetUdid || ''); res.cookie('qf_tool_id', toolId, { maxAge: 365*24*60*60*1000, httpOnly:false, sameSite:'Lax' }); if(targetUdid) res.cookie('qf_rename_udid', targetUdid, { maxAge: 365*24*60*60*1000, httpOnly:false, sameSite:'Lax' }); else res.clearCookie('qf_rename_udid'); res.redirect('/Settings'); });
 app.post('/Settings/quick-copy',(req,res)=>{ const s=domainSettings(req); s.quickCopyText=String(req.body.quickCopyText||''); s.withdrawEmailBase=String(req.body.withdrawEmailBase||'').replace(/\s+/g,'').trim(); writeDomainSettings(req,s); res.redirect('/Settings'); });
 app.post('/Settings/security',(req,res)=>{ const s=domainSettings(req); s.passwordEnabled=!!req.body.passwordEnabled; const pw=String(req.body.accessPassword||'').trim(); if(pw) s.accessPassword=pw; if(!s.accessPassword) s.accessPassword='zx'; writeDomainSettings(req,s); if(!s.passwordEnabled){ res.setHeader('Set-Cookie','qf_auth=; Path=/; Max-Age=0; SameSite=Lax'); } res.redirect('/Settings'); });
 app.post('/Settings/icloud',(req,res)=>{ const s=domainSettings(req); s.icloudEmail=req.body.icloudEmail||''; s.icloudPassword=req.body.icloudPassword||''; writeDomainSettings(req,s); res.redirect('/Settings'); });

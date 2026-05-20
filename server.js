@@ -39,7 +39,7 @@ const files = {
 };
 const defaults = {
   accounts: [], used: [], videos: [], links: [], user2fa: [], logs: [], iphoneQueue: [],
-  settings: { mailMethod:'OAuth2', icloudEmail:'', icloudPassword:'', quickCopyText:'', withdrawEmailBase:'', showVideos:true, showAccount:true, showEmail:true, showIcloud:true, zaloUrl:'/zalo.jpg', iphoneToolUrl:'http://127.0.0.1:5799/api/rename-device', passwordEnabled:false, accessPassword:'zx' },
+  settings: { mailMethod:'OAuth2', icloudEmail:'', icloudPassword:'', quickCopyText:'', withdrawEmailBase:'', showVideos:true, showAccount:true, showEmail:true, showIcloud:true, zaloUrl:'/zalo.jpg', iphoneToolUrl:'http://127.0.0.1:5799/api/rename-device', renameToolId:'default', passwordEnabled:false, accessPassword:'zx' },
   sim: { apiKey:'', service:'lf', country:'10', active: [], activeByClient: {} },
   domainSettings: {},
   domainSim: {},
@@ -142,6 +142,26 @@ function getClientId(req, res){
   }
   return id;
 }
+
+function cleanToolId(v){
+  return String(v || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'default';
+}
+function currentToolId(req, res){
+  const ck = parseCookie(req);
+  const fromQuery = req.query.toolId || req.query.tool || req.query.pc;
+  if (fromQuery) {
+    const id = cleanToolId(fromQuery);
+    if (res) res.cookie('qf_tool_id', id, { maxAge: 365*24*60*60*1000, httpOnly: false, sameSite: 'Lax' });
+    return id;
+  }
+  if (ck.qf_tool_id) return cleanToolId(ck.qf_tool_id);
+  const s = domainSettings(req);
+  return cleanToolId(s.renameToolId || 'default');
+}
+app.use((req,res,next)=>{
+  if (req.query.toolId || req.query.tool || req.query.pc) currentToolId(req,res);
+  next();
+});
 function getClientActive(s, clientId){
   if (!s.activeByClient || typeof s.activeByClient !== 'object') s.activeByClient = {};
   return Array.isArray(s.activeByClient[clientId]) ? s.activeByClient[clientId] : [];
@@ -436,29 +456,43 @@ app.post('/IphoneTool/SendName', async (req,res)=>{
   const name = String(req.body.name || '').trim();
   const mode = String(req.body.mode || 'user').trim();
   const slot = String(req.body.slot || req.query.slot || '').trim();
+  const toolId = cleanToolId(req.body.toolId || req.query.toolId || currentToolId(req, res));
   if (!name) return res.json({status:false, message:'Tên gửi sang iPhone Tool đang trống.'});
 
-  // Khi web chạy trên Render/domain thật, trình duyệt iPhone không thể gọi trực tiếp
-  // http://127.0.0.1 trên máy tính đang chạy iPhone Tool. Vì vậy gửi lệnh vào hàng chờ
-  // để iPhone Tool trên PC tự poll /IphoneTool/PopQueue và đổi tên.
-  const payload = { name, mode, slot, createdAt: new Date().toISOString() };
+  // Mỗi iPhone Tool trên mỗi máy tính phải có toolId riêng.
+  // Lệnh đổi tên được gắn toolId để tool máy khác không lấy nhầm hàng chờ.
+  const payload = { name, mode, slot, toolId, createdAt: new Date().toISOString() };
   const q = read('iphoneQueue');
   q.push(payload);
-  write('iphoneQueue', q.slice(-200));
+  write('iphoneQueue', q.slice(-500));
   return res.json({
     status:true,
     queued:true,
-    message:`Đã gửi lệnh đổi tên vào iPhone Tool. Tên: ${name}`
+    toolId,
+    message:`Đã gửi lệnh đổi tên vào iPhone Tool ${toolId}. Tên: ${name}`
   });
 });
 app.get('/IphoneTool/Queue',(req,res)=>res.json(read('iphoneQueue')));
-app.post('/IphoneTool/PopQueue',(req,res)=>{ const q=read('iphoneQueue'); const item=q.shift()||null; write('iphoneQueue',q); res.json({status:true,item}); });
+app.post('/IphoneTool/PopQueue',(req,res)=>{
+  const reqTool = cleanToolId(req.body.toolId || req.query.toolId || req.headers['x-tool-id'] || '');
+  const q = read('iphoneQueue');
+  let idx = -1;
+  if (reqTool && reqTool !== 'default') {
+    idx = q.findIndex(x => cleanToolId(x && x.toolId) === reqTool);
+  } else {
+    // Tool cũ/không có mã chỉ được lấy lệnh cũ không gắn toolId, không lấy nhầm lệnh của máy khác.
+    idx = q.findIndex(x => !x || !x.toolId);
+  }
+  const item = idx >= 0 ? q.splice(idx, 1)[0] : null;
+  write('iphoneQueue', q);
+  res.json({status:true,item,toolId:reqTool || 'default'});
+});
 
 app.get('/Settings', (req,res)=>{
  const s=domainSettings(req);
  const body = `<div class="quick-grid"><a class="quick" href="/Video/AddVideo">🎬<span>Thêm Video</span></a><a class="quick" href="/Link/AddLink">🔗<span>Thêm Link</span></a><a class="quick" href="/Account/AddAccount">👤<span>Thêm Tài khoản</span></a><a class="quick" href="/otp">🔐<span>User | 2FA</span></a><a class="quick" href="/thue-otp-sim">📱<span>Thuê OTP SIM</span></a></div>`+
  card('📬 Cài đặt đọc mail', `<form method="post" action="/Settings/mail"><label>Phương thức đọc mail</label><select name="mailMethod"><option ${s.mailMethod==='OAuth2'?'selected':''}>OAuth2</option><option ${s.mailMethod==='Graph API'?'selected':''}>Graph API</option><option ${s.mailMethod==='Mail TM'?'selected':''}>Mail TM</option><option ${s.mailMethod==='FakeEmail'?'selected':''}>FakeEmail</option></select><button class="btn primary wide">💾 Lưu cài đặt Mail</button></form>`)+
- card('📲 Kết nối iPhone Tool', `<form method="post" action="/Settings/iphone-tool"><label>Địa chỉ nhận lệnh của iPhone Tool</label><input name="iphoneToolUrl" value="${esc(s.iphoneToolUrl || 'http://127.0.0.1:5799/api/rename-device')}"><small class="muted">Mặc định dùng tool chạy trên máy tính. Nếu tool chưa mở, web sẽ lưu vào hàng chờ.</small><button class="btn primary wide">💾 Lưu kết nối Tool</button></form>`)+
+ card('📲 Kết nối iPhone Tool', `<form method="post" action="/Settings/iphone-tool"><label>Mã iPhone Tool của máy tính này</label><input name="renameToolId" value="${esc(s.renameToolId || 'default')}" placeholder="VD: PC-A, PC-B, MAY1"><small class="muted">Mỗi máy tính chạy iPhone Tool phải dùng một mã riêng. Web sẽ gửi lệnh đúng mã này để tránh đổi nhầm máy.</small><label>Địa chỉ nhận lệnh local của iPhone Tool</label><input name="iphoneToolUrl" value="${esc(s.iphoneToolUrl || 'http://127.0.0.1:5799/api/rename-device')}"><small class="muted">Có thể mở web với ?tool=PC-A để lưu mã tool riêng trên thiết bị đó.</small><button class="btn primary wide">💾 Lưu kết nối Tool</button></form>`)+
  card('⚡ Copy nhanh / Mail rút tiền', `<form method="post" action="/Settings/quick-copy"><label>Nội dung copy nhanh trong User | 2FA</label><textarea name="quickCopyText" rows="3" placeholder="Nhập bất kỳ nội dung nào cần copy nhanh">${esc(s.quickCopyText||'')}</textarea><label>Mail rút tiền gốc</label><input name="withdrawEmailBase" value="${esc(s.withdrawEmailBase||'')}" placeholder="zxcvb@gmail.com"><small class="muted">Ví dụ zxcvb@gmail.com sẽ random dạng z.xcvb+tiktoktool001@gmail.com.</small><button class="btn primary wide">💾 Lưu copy nhanh / mail rút tiền</button></form>`)+
  card('🔒 Bảo vệ bằng mật khẩu', `<form method="post" action="/Settings/security"><label class="switch"><span>Bật bảo vệ bằng mật khẩu</span><input type="checkbox" name="passwordEnabled" ${s.passwordEnabled?'checked':''}></label><label>Mật khẩu</label><input type="password" name="accessPassword" placeholder="Nhập mật khẩu mới (để trống để giữ nguyên)"><small class="muted">Mật khẩu hiện tại: ${esc(s.accessPassword || 'zx')}</small><button class="btn primary wide">💾 Lưu cài đặt bảo vệ</button></form>`)+
  card('☁️ Cài đặt iCloud', `<form method="post" action="/Settings/icloud"><label>Tài khoản iCloud</label><div class="copy-row"><input name="icloudEmail" value="${esc(s.icloudEmail)}"><button type="button" onclick="copyValue(this)">📋</button></div><label>Mật khẩu iCloud</label><div class="copy-row"><input name="icloudPassword" value="${esc(s.icloudPassword)}"><button type="button" onclick="copyValue(this)">📋</button></div><button class="btn primary wide">💾 Lưu thông tin iCloud</button></form>`)+
@@ -466,7 +500,7 @@ app.get('/Settings', (req,res)=>{
  res.send(layout('Cài đặt hệ thống', body, 'settings'));
 });
 app.post('/Settings/mail',(req,res)=>{ const s=domainSettings(req); s.mailMethod=req.body.mailMethod||s.mailMethod; writeDomainSettings(req,s); res.redirect('/Settings'); });
-app.post('/Settings/iphone-tool',(req,res)=>{ const s=domainSettings(req); s.iphoneToolUrl=req.body.iphoneToolUrl||'http://127.0.0.1:5799/api/rename-device'; writeDomainSettings(req,s); res.redirect('/Settings'); });
+app.post('/Settings/iphone-tool',(req,res)=>{ const s=domainSettings(req); s.iphoneToolUrl=req.body.iphoneToolUrl||'http://127.0.0.1:5799/api/rename-device'; s.renameToolId=cleanToolId(req.body.renameToolId || s.renameToolId || 'default'); writeDomainSettings(req,s); res.cookie('qf_tool_id', s.renameToolId, { maxAge: 365*24*60*60*1000, httpOnly:false, sameSite:'Lax' }); res.redirect('/Settings'); });
 app.post('/Settings/quick-copy',(req,res)=>{ const s=domainSettings(req); s.quickCopyText=String(req.body.quickCopyText||''); s.withdrawEmailBase=String(req.body.withdrawEmailBase||'').replace(/\s+/g,'').trim(); writeDomainSettings(req,s); res.redirect('/Settings'); });
 app.post('/Settings/security',(req,res)=>{ const s=domainSettings(req); s.passwordEnabled=!!req.body.passwordEnabled; const pw=String(req.body.accessPassword||'').trim(); if(pw) s.accessPassword=pw; if(!s.accessPassword) s.accessPassword='zx'; writeDomainSettings(req,s); if(!s.passwordEnabled){ res.setHeader('Set-Cookie','qf_auth=; Path=/; Max-Age=0; SameSite=Lax'); } res.redirect('/Settings'); });
 app.post('/Settings/icloud',(req,res)=>{ const s=domainSettings(req); s.icloudEmail=req.body.icloudEmail||''; s.icloudPassword=req.body.icloudPassword||''; writeDomainSettings(req,s); res.redirect('/Settings'); });

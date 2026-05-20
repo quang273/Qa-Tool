@@ -127,6 +127,35 @@ function writeDomainSettings(req, value){ writeDomain(req, 'domainSettings', 'se
 function domainSim(req){ return readDomain(req, 'domainSim', 'sim'); }
 function writeDomainSim(req, value){ writeDomain(req, 'domainSim', 'sim', value); }
 
+// v63: tách kho tài khoản / User|2FA / tài khoản vừa lấy theo từng domain.
+// Không để qazx.fun và quanq88.fun dùng chung key Supabase nữa.
+function readDomainValue(req, storeKey, fallback){
+  const all = read(storeKey);
+  const key = domainKey(req);
+  if (!all || typeof all !== 'object' || Array.isArray(all)) return deepClone(fallback);
+  return deepClone(Object.prototype.hasOwnProperty.call(all, key) ? all[key] : fallback);
+}
+function writeDomainValue(req, storeKey, value){
+  let all = read(storeKey);
+  if (!all || typeof all !== 'object' || Array.isArray(all)) all = {};
+  all[domainKey(req)] = deepClone(value);
+  write(storeKey, all);
+}
+function readDomainArray(req, storeKey){
+  const v = readDomainValue(req, storeKey, []);
+  return Array.isArray(v) ? v : [];
+}
+function writeDomainArray(req, storeKey, value){
+  writeDomainValue(req, storeKey, Array.isArray(value) ? value : []);
+}
+function readDomainObject(req, storeKey){
+  const v = readDomainValue(req, storeKey, {});
+  return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
+}
+function writeDomainObject(req, storeKey, value){
+  writeDomainValue(req, storeKey, (value && typeof value === 'object' && !Array.isArray(value)) ? value : {});
+}
+
 function parseCookie(req){
   const out = {};
   String(req.headers.cookie || '').split(';').forEach(part => {
@@ -339,29 +368,29 @@ function accountRenameName(parts){
   const uIdx = (isPureNumber(parts[0]) && parts[1]) ? 1 : 0;
   return parts[uIdx] || parts[0] || '';
 }
-function popFirstCurrentPick(){
-  const picks = read('currentPicks');
+function popFirstCurrentPick(req){
+  const picks = readDomainObject(req, 'currentPicks');
   const keys = Object.keys(picks || {});
   if (!keys.length) return null;
   // ưu tiên bản lấy gần nhất nếu id sinh theo thời gian, nếu không thì lấy key cuối cùng
   const k = keys[keys.length - 1];
   const parts = Array.isArray(picks[k]) ? picks[k].map(String) : [];
   delete picks[k];
-  write('currentPicks', picks);
+  writeDomainObject(req, 'currentPicks', picks);
   if (!parts.length) return null;
-  return { raw: parts.join('|'), parts, name: accountRenameName(parts), accountId: k, source:'currentPick' };
+  return { raw: parts.join('|'), parts, name: accountRenameName(parts), accountId: k, source:'currentPick', domain: domainKey(req) };
 }
-function popFirstUser2fa(){
-  const list = read('user2fa');
+function popFirstUser2fa(req){
+  const list = readDomainArray(req, 'user2fa');
   if (!Array.isArray(list) || !list.length) return null;
   const x = list.shift();
-  write('user2fa', list);
+  writeDomainArray(req, 'user2fa', list);
   const user = String(x.user || '').trim();
   const secret = String(x.secret || '').trim();
-  if (!user) return popFirstUser2fa();
+  if (!user) return popFirstUser2fa(req);
   // Nếu có secret thì đổi tên user|secret, nếu không có thì chỉ đổi tên user.
   const name = secret ? (user + '|' + secret) : user;
-  return { raw: name, parts: secret ? [user, secret] : [user], name, source:'user2fa', remainingUser2fa:list.length };
+  return { raw: name, parts: secret ? [user, secret] : [user], name, source:'user2fa', remainingUser2fa:list.length, domain: domainKey(req) };
 }
 function userToolBox(parts){
   if (!parts.length) return '';
@@ -451,7 +480,7 @@ function makePickId(){ return Date.now().toString(36) + Math.random().toString(3
 function getAccountFromQuery(req){
   // Chỉ hiển thị tài khoản khi URL có accountId. Không đọc cookie nữa.
   // Nhờ vậy bấm tải lại/trở về trang chủ không giữ tài khoản vừa lấy trên màn hình.
-  const picks = read('currentPicks');
+  const picks = readDomainObject(req, 'currentPicks');
   const id = String(req.query.accountId || '').trim();
   if (id) {
     const item = picks[id] || null;
@@ -482,39 +511,38 @@ app.get('/', (req,res)=>{
 });
 
 app.get('/Home/GetAccount', (req,res)=>{
-  const accounts = read('accounts').map(x=>String(x||'').trim()).filter(Boolean);
+  const accounts = readDomainArray(req, 'accounts').map(x=>String(x||'').trim()).filter(Boolean);
   const pick = accounts.shift();
   if (!pick) return res.redirect('/?noAccount=1');
-  // Bấm Lấy tài khoản là lấy dòng đầu tiên và xóa luôn khỏi danh sách đang lưu.
-  // Nhờ vậy lấy hết thì lần bấm tiếp theo sẽ báo không còn tài khoản, không đứng lại ở tài khoản cuối.
-  write('accounts', accounts);
+  // v63: lấy và xóa dòng đầu tiên chỉ trong kho tài khoản của CHÍNH DOMAIN hiện tại.
+  writeDomainArray(req, 'accounts', accounts);
   const parts = splitAccountLine(pick);
   const id = makePickId();
-  const picks = read('currentPicks');
+  const picks = readDomainObject(req, 'currentPicks');
   picks[id] = parts;
-  // Giữ tối đa 100 tài khoản đang mở để file không phình to.
+  // Giữ tối đa 100 tài khoản đang mở cho từng domain để store không phình to.
   const keys = Object.keys(picks);
   for (const k of keys.slice(0, Math.max(0, keys.length - 100))) delete picks[k];
-  write('currentPicks', picks);
+  writeDomainObject(req, 'currentPicks', picks);
   res.clearCookie('qf_current_account_id');
   res.redirect('/?accountId=' + urlEnc(id));
 });
 app.get('/Home/MarkUsed', (req,res)=>{ res.redirect('/'); });
 
-function popNextAccountForTool(){
+function popNextAccountForTool(req){
   // Ưu tiên 1: danh sách User|2FA. Có secret thì đổi user|secret, không có thì chỉ đổi user.
-  const u2fa = popFirstUser2fa();
+  const u2fa = popFirstUser2fa(req);
   if (u2fa) return u2fa;
 
   // Ưu tiên 2: chỉ lấy tài khoản đã bấm Lấy tài khoản trên trang chủ và đang hiển thị.
   // Không tự lấy tiếp từ danh sách tài khoản còn lại để tránh tool lấy nhầm account chưa chuẩn bị.
-  const picked = popFirstCurrentPick();
+  const picked = popFirstCurrentPick(req);
   if (picked) return picked;
 
   return null;
 }
 app.post('/IphoneTool/GetAccount',(req,res)=>{
-  const item = popNextAccountForTool();
+  const item = popNextAccountForTool(req);
   if (!item) return res.json({status:false,message:'Không còn User|2FA hoặc tài khoản đang hiển thị ở Trang chủ để lấy.'});
   return res.json({status:true,item});
 });
@@ -522,11 +550,11 @@ app.post('/IphoneTool/GetAccounts',(req,res)=>{
   const count = Math.max(1, Math.min(100, parseInt(req.body.count || req.query.count || '1', 10) || 1));
   const items = [];
   for (let i=0;i<count;i++) {
-    const item = popNextAccountForTool();
+    const item = popNextAccountForTool(req);
     if (!item) break;
     items.push(item);
   }
-  return res.json({status:true,items,remaining:read('accounts').length,user2faRemaining:read('user2fa').length,message:items.length?`Đã lấy ${items.length} dữ liệu đổi tên.`:'Không còn User|2FA hoặc tài khoản đang hiển thị ở Trang chủ để lấy.'});
+  return res.json({status:true,items,remaining:readDomainArray(req,'accounts').length,user2faRemaining:readDomainArray(req,'user2fa').length,message:items.length?`Đã lấy ${items.length} dữ liệu đổi tên.`:'Không còn User|2FA hoặc tài khoản đang hiển thị ở Trang chủ để lấy.'});
 });
 
 app.get('/Login', (req,res)=>{
@@ -822,20 +850,20 @@ app.post('/Settings/security',(req,res)=>{ const s=domainSettings(req); s.passwo
 app.post('/Settings/icloud',(req,res)=>{ const s=domainSettings(req); s.icloudEmail=req.body.icloudEmail||''; s.icloudPassword=req.body.icloudPassword||''; writeDomainSettings(req,s); res.redirect('/Settings'); });
 app.post('/Settings/display',(req,res)=>{ const s=domainSettings(req); ['showVideos','showAccount','showEmail','showIcloud'].forEach(k=>s[k]=!!req.body[k]); writeDomainSettings(req,s); res.redirect('/Settings'); });
 
-app.get('/Account/AddAccount',(req,res)=>{ const accounts=read('accounts'); const body=card('👤 Thêm tài khoản', `<form method="post"><label>Nhập danh sách tài khoản, mỗi dòng một tài khoản</label><textarea name="accounts" rows="12" placeholder="Mỗi dòng một tài khoản
+app.get('/Account/AddAccount',(req,res)=>{ const accounts=readDomainArray(req, 'accounts'); const body=card('👤 Thêm tài khoản', `<form method="post"><label>Nhập danh sách tài khoản, mỗi dòng một tài khoản</label><textarea name="accounts" rows="12" placeholder="Mỗi dòng một tài khoản
 user|pass|secret2FA
 401|user|@handle|hotmail|pass|refreshToken|clientId
-user pass email time Emailfake@">${esc(accounts.join('\n'))}</textarea><small class="muted">Danh sách lưu trực tiếp trong ô này. Lấy hết tài khoản thì trang chủ sẽ báo không còn tài khoản mới để lấy.</small><button class="btn primary wide">💾 Lưu tài khoản</button></form>`); res.send(layout('Thêm tài khoản',body,'settings')); });
+user pass email time Emailfake@">${esc(accounts.join('\n'))}</textarea><small class="muted">Danh sách lưu riêng cho domain hiện tại. Lấy hết tài khoản thì trang chủ sẽ báo không còn tài khoản mới để lấy.</small><button class="btn primary wide">💾 Lưu tài khoản</button></form>`); res.send(layout('Thêm tài khoản',body,'settings')); });
 app.post('/Account/AddAccount',(req,res)=>{
   const lines=String(req.body.accounts||'').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
   const clean=[];
   for(const l of lines){ if(!clean.includes(l)) clean.push(l); }
   // Lưu đúng nội dung trong ô nhập. Không dùng danh sách used nữa vì lấy dòng nào là xóa dòng đó khỏi kho.
-  write('accounts', clean);
-  write('used', []);
+  writeDomainArray(req, 'accounts', clean);
+  writeDomainArray(req, 'used', []);
   res.redirect('/?saved=account');
 });
-app.get('/Account/Clear',(req,res)=>{ write('accounts',[]); write('used',[]); res.redirect('/Account/AddAccount'); });
+app.get('/Account/Clear',(req,res)=>{ writeDomainArray(req, 'accounts', []); writeDomainArray(req, 'used', []); writeDomainObject(req, 'currentPicks', {}); res.redirect('/Account/AddAccount'); });
 
 
 
@@ -1133,10 +1161,10 @@ app.post('/Link/AddLink',(req,res)=>{ const links=read('links'); const l=String(
 app.get('/Link/Delete/:i',(req,res)=>{ const l=read('links'); l.splice(Number(req.params.i),1); write('links',l); res.redirect('/Link/AddLink'); });
 app.get('/Link/Clear',(req,res)=>{ write('links',[]); res.redirect('/Link/AddLink'); });
 
-app.get('/otp',(req,res)=>{ const list=read('user2fa'); const s=domainSettings(req); const quickCopyHtml = `<div class="field quick-copy-box"><label>Copy nhanh</label><div class="quick-copy-row"><input id="quickCopyText" readonly value="${esc(s.quickCopyText||'')}" placeholder="Chưa cài nội dung copy nhanh"><button class="input-copy" type="button" data-copy-input="quickCopyText" title="Copy nhanh">📋</button></div></div>`; const body=card('🔐 User | 2FA', quickCopyHtml + `<form method="post"><label>Nhập nhanh user|2FA</label><div class="input-action-row"><button class="input-clear" type="button" data-clear-input="u2faCombined" title="Xóa dòng nhập nhanh">✕</button><input id="u2faCombined" name="combined" placeholder="karissapaul0|3RFA... hoặc karissapaul0 3RFA..."><button class="input-paste" type="button" data-paste-input="u2faCombined" title="Dán vào dòng nhập nhanh">📥</button><button class="input-copy" type="button" data-copy-input="u2faCombined" title="Copy dòng nhập nhanh">📋</button></div><small class="hint">Dán định dạng user|2FA hoặc user 2FA, hệ thống tự tách xuống 2 dòng bên dưới.</small><label>User</label><div class="input-action-row"><button class="input-clear" type="button" data-clear-input="u2faUser" title="Xóa User">✕</button><input id="u2faUser" name="user" placeholder="username"><button class="input-paste" type="button" data-paste-input="u2faUser" title="Dán User">📥</button><button class="input-copy" type="button" data-copy-input="u2faUser" title="Copy User">📋</button></div><label>Secret 2FA</label><div class="input-action-row"><button class="input-clear" type="button" data-clear-input="u2faSecret" title="Xóa Secret 2FA">✕</button><input id="u2faSecret" name="secret" placeholder="JBSWY3DPEHPK3PXP"><button class="input-paste" type="button" data-paste-input="u2faSecret" title="Dán Secret 2FA">📥</button><button class="input-copy" type="button" data-copy-input="u2faSecret" title="Copy Secret 2FA">📋</button></div><div class="otpbox"><div><b>Mã 2FA</b><small class="otp-remain">${remain()}s</small></div><div class="otpcode" id="u2faLiveOtp">------</div><button type="button" onclick="copyText(document.getElementById('u2faLiveOtp').textContent)">📋</button></div><div class="btn-grid"><button class="btn primary" type="submit">💾 Lưu user|2FA</button></div></form>`)+card('📋 Danh sách', `<div class="btn-grid"><a class="btn soft" href="/otp/export">📤 Xuất TXT</a></div><div class="list">${list.map((x,i)=>{ const row = x.secret ? (x.user+'|'+x.secret) : x.user; const label = x.secret ? (esc(x.user)+' | '+esc(x.secret)) : esc(x.user); return `<div class="list-item compact"><a class="row-remove" href="/otp/delete/${i}" title="Xóa dòng này">✕</a><div class="row-value">${label}</div><div class="row-actions"><button class="row-copy" type="button" data-copy="${esc(row)}" title="Copy dòng này">📋</button></div></div>`; }).join('')||'<div class="empty">Chưa có dữ liệu.</div>'}</div>`); res.send(layout('User | 2FA',body,'otp')); });
-app.post('/otp',(req,res)=>{ const list=read('user2fa'); let user=String(req.body.user||'').trim(); let secret=String(req.body.secret||'').trim(); const combined=String(req.body.combined||'').trim(); if(combined){ const parsed=parseUser2faLoose(combined); if(!user && parsed.user) user=parsed.user; if(!secret && parsed.secret) secret=parsed.secret; } if(user){ secret=String(secret||'').replace(/\s/g,'').toUpperCase(); list.push({user, secret}); } write('user2fa',list); res.redirect('/otp'); });
-app.get('/otp/export',(req,res)=>{ const list=read('user2fa'); const txt=list.map(x=>x.secret?`${x.user}|${x.secret}`:String(x.user||'')).join('\n'); res.setHeader('Content-Type','text/plain; charset=utf-8'); res.setHeader('Content-Disposition','attachment; filename="user-2fa.txt"'); res.send(txt); });
-app.get('/otp/delete/:i',(req,res)=>{ const l=read('user2fa'); l.splice(Number(req.params.i),1); write('user2fa',l); res.redirect('/otp'); });
+app.get('/otp',(req,res)=>{ const list=readDomainArray(req, 'user2fa'); const s=domainSettings(req); const quickCopyHtml = `<div class="field quick-copy-box"><label>Copy nhanh</label><div class="quick-copy-row"><input id="quickCopyText" readonly value="${esc(s.quickCopyText||'')}" placeholder="Chưa cài nội dung copy nhanh"><button class="input-copy" type="button" data-copy-input="quickCopyText" title="Copy nhanh">📋</button></div></div>`; const body=card('🔐 User | 2FA', quickCopyHtml + `<form method="post"><label>Nhập nhanh user|2FA</label><div class="input-action-row"><button class="input-clear" type="button" data-clear-input="u2faCombined" title="Xóa dòng nhập nhanh">✕</button><input id="u2faCombined" name="combined" placeholder="karissapaul0|3RFA... hoặc karissapaul0 3RFA..."><button class="input-paste" type="button" data-paste-input="u2faCombined" title="Dán vào dòng nhập nhanh">📥</button><button class="input-copy" type="button" data-copy-input="u2faCombined" title="Copy dòng nhập nhanh">📋</button></div><small class="hint">Dán định dạng user|2FA hoặc user 2FA, hệ thống tự tách xuống 2 dòng bên dưới.</small><label>User</label><div class="input-action-row"><button class="input-clear" type="button" data-clear-input="u2faUser" title="Xóa User">✕</button><input id="u2faUser" name="user" placeholder="username"><button class="input-paste" type="button" data-paste-input="u2faUser" title="Dán User">📥</button><button class="input-copy" type="button" data-copy-input="u2faUser" title="Copy User">📋</button></div><label>Secret 2FA</label><div class="input-action-row"><button class="input-clear" type="button" data-clear-input="u2faSecret" title="Xóa Secret 2FA">✕</button><input id="u2faSecret" name="secret" placeholder="JBSWY3DPEHPK3PXP"><button class="input-paste" type="button" data-paste-input="u2faSecret" title="Dán Secret 2FA">📥</button><button class="input-copy" type="button" data-copy-input="u2faSecret" title="Copy Secret 2FA">📋</button></div><div class="otpbox"><div><b>Mã 2FA</b><small class="otp-remain">${remain()}s</small></div><div class="otpcode" id="u2faLiveOtp">------</div><button type="button" onclick="copyText(document.getElementById('u2faLiveOtp').textContent)">📋</button></div><div class="btn-grid"><button class="btn primary" type="submit">💾 Lưu user|2FA</button></div></form>`)+card('📋 Danh sách', `<div class="btn-grid"><a class="btn soft" href="/otp/export">📤 Xuất TXT</a></div><div class="list">${list.map((x,i)=>{ const row = x.secret ? (x.user+'|'+x.secret) : x.user; const label = x.secret ? (esc(x.user)+' | '+esc(x.secret)) : esc(x.user); return `<div class="list-item compact"><a class="row-remove" href="/otp/delete/${i}" title="Xóa dòng này">✕</a><div class="row-value">${label}</div><div class="row-actions"><button class="row-copy" type="button" data-copy="${esc(row)}" title="Copy dòng này">📋</button></div></div>`; }).join('')||'<div class="empty">Chưa có dữ liệu.</div>'}</div>`); res.send(layout('User | 2FA',body,'otp')); });
+app.post('/otp',(req,res)=>{ const list=readDomainArray(req, 'user2fa'); let user=String(req.body.user||'').trim(); let secret=String(req.body.secret||'').trim(); const combined=String(req.body.combined||'').trim(); if(combined){ const parsed=parseUser2faLoose(combined); if(!user && parsed.user) user=parsed.user; if(!secret && parsed.secret) secret=parsed.secret; } if(user){ secret=String(secret||'').replace(/\s/g,'').toUpperCase(); list.push({user, secret}); } writeDomainArray(req, 'user2fa', list); res.redirect('/otp'); });
+app.get('/otp/export',(req,res)=>{ const list=readDomainArray(req, 'user2fa'); const txt=list.map(x=>x.secret?`${x.user}|${x.secret}`:String(x.user||'')).join('\n'); res.setHeader('Content-Type','text/plain; charset=utf-8'); res.setHeader('Content-Disposition','attachment; filename="user-2fa.txt"'); res.send(txt); });
+app.get('/otp/delete/:i',(req,res)=>{ const l=readDomainArray(req, 'user2fa'); l.splice(Number(req.params.i),1); writeDomainArray(req, 'user2fa', l); res.redirect('/otp'); });
 app.get('/api/otp',(req,res)=>res.json({otp:currentOtp(req.query.secret), remaining:remain()}));
 
 

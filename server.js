@@ -221,7 +221,7 @@ function splitAccountLine(line){
     .map(s => s.trim())
     .filter(Boolean);
 }
-function is2faSecret(s){ return /^[A-Z2-7]{16,}$/i.test(String(s||'').replace(/\s/g,'')); }
+function is2faSecret(s){ const v=String(s||'').replace(/\s/g,'').trim(); return /^[A-Z0-9]{16,}$/i.test(v) || (v.length>=16 && /^[A-Za-z0-9]+$/.test(v)); }
 function parseUser2faLoose(raw){
   const parts = String(raw||'').trim().includes('|')
     ? String(raw||'').split('|').map(x=>x.trim()).filter(Boolean)
@@ -541,24 +541,52 @@ app.post('/Home/GetCode', async (req,res)=>{
   }
   return res.json({ status:false, message:'Dạng tài khoản này chưa có nguồn đọc code. Nếu là Emailfake hãy thêm Emailfake@ ở cuối.' });
 });
+async function refreshMicrosoftAccessToken(refreshToken, clientId){
+  // Nhiều token Hotmail cũ không chấp nhận scope cố định.
+  // Thử không truyền scope trước, sau đó mới thử các scope Graph phổ biến.
+  const tenants = ['common', 'consumers'];
+  const scopes = ['', 'offline_access Mail.Read', 'https://graph.microsoft.com/Mail.Read', 'https://graph.microsoft.com/.default'];
+  let lastDetail = '';
+  for (const tenant of tenants) {
+    for (const scope of scopes) {
+      const body = new URLSearchParams({
+        client_id: clientId,
+        refresh_token: refreshToken,
+        grant_type: 'refresh_token'
+      });
+      if (scope) body.set('scope', scope);
+      const tr = await fetch(`https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`, {
+        method: 'POST',
+        headers: {'content-type':'application/x-www-form-urlencoded'},
+        body
+      });
+      if (tr.ok) return await tr.json();
+      try {
+        const ej = await tr.json();
+        lastDetail = ej.error_description || ej.error || JSON.stringify(ej);
+      } catch {
+        lastDetail = await tr.text().catch(()=> '');
+      }
+      // Nếu refresh token thật sự hết hạn/thu hồi thì không cần thử tiếp quá nhiều.
+      if (/invalid_grant|expired|revoked|AADSTS700082|AADSTS70000/i.test(lastDetail) && !/scope|scopes|unauthorized/i.test(lastDetail)) {
+        throw new Error('refresh token lỗi: token đã hết hạn hoặc bị thu hồi');
+      }
+    }
+  }
+  throw new Error('refresh token lỗi' + (lastDetail ? ': ' + String(lastDetail).slice(0,220) : ''));
+}
+
 async function getMicrosoftTikTokCode(email, refreshToken, clientId){
   if (!email || !refreshToken || !clientId) throw new Error('thiếu email/token/clientId');
-  const body = new URLSearchParams({ client_id: clientId, refresh_token: refreshToken, grant_type:'refresh_token', scope:'offline_access Mail.Read https://graph.microsoft.com/Mail.Read' });
-  const tr = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', { method:'POST', headers:{'content-type':'application/x-www-form-urlencoded'}, body });
-  if (!tr.ok) {
-    let detail = '';
-    try { const ej = await tr.json(); detail = ej.error_description || ej.error || ''; } catch { detail = await tr.text().catch(()=> ''); }
-    throw new Error('refresh token lỗi' + (detail ? ': ' + String(detail).slice(0,180) : ''));
-  }
-  const tj = await tr.json();
-  const mr = await fetch('https://graph.microsoft.com/v1.0/me/messages?$top=15&$select=subject,bodyPreview,from,receivedDateTime&$orderby=receivedDateTime desc', { headers:{authorization:`Bearer ${tj.access_token}`} });
+  const tj = await refreshMicrosoftAccessToken(refreshToken, clientId);
+  const mr = await fetch('https://graph.microsoft.com/v1.0/me/messages?$top=25&$select=subject,bodyPreview,from,receivedDateTime&$orderby=receivedDateTime desc', { headers:{authorization:`Bearer ${tj.access_token}`} });
   if (!mr.ok) {
     let detail = '';
     try { const ej = await mr.json(); detail = ej.error?.message || ej.error || ''; } catch { detail = await mr.text().catch(()=> ''); }
-    throw new Error('Graph Mail.Read lỗi' + (detail ? ': ' + String(detail).slice(0,180) : ''));
+    throw new Error('Graph Mail.Read lỗi' + (detail ? ': ' + String(detail).slice(0,220) : ''));
   }
   const mj = await mr.json();
-  const msg = (mj.value||[]).find(m => /tiktok|account\.tiktok|mã|code|verification/i.test([m.subject,m.bodyPreview,m.from?.emailAddress?.address].join(' ')));
+  const msg = (mj.value||[]).find(m => /tiktok|account\.tiktok|mã|code|verification|verify/i.test([m.subject,m.bodyPreview,m.from?.emailAddress?.address].join(' ')));
   return msg ? extractCode(`${msg.subject} ${msg.bodyPreview}`) : '';
 }
 

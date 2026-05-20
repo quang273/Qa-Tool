@@ -1,6 +1,6 @@
 {
-  "name": "quangfun-complete-v53",
-  "version": "53.0.0",
+  "name": "quangfun-complete-v58",
+  "version": "58.0.0",
   "description": "QuangFun mobile app with account queue, 2FA countdown and Grizzly SIM OTP",
   "main": "server.js",
   "scripts": {

@@ -589,7 +589,14 @@ async function refreshMicrosoftAccessToken(refreshToken, clientId){
         headers: {'content-type':'application/x-www-form-urlencoded'},
         body
       });
-      if (tr.ok) return await tr.json();
+      if (tr.ok) {
+        const tj = await tr.json();
+        // Một số refresh token trả 200 nhưng không trả access_token hợp lệ cho Microsoft Graph.
+        // Không return sớm nếu token rỗng/không phải JWT, tiếp tục thử tenant/scope khác.
+        if (tj && typeof tj.access_token === 'string' && tj.access_token.split('.').length >= 3) return tj;
+        lastDetail = 'OAuth refresh trả về nhưng access_token Graph không hợp lệ';
+        continue;
+      }
       try {
         const ej = await tr.json();
         lastDetail = ej.error_description || ej.error || JSON.stringify(ej);
@@ -608,6 +615,9 @@ async function refreshMicrosoftAccessToken(refreshToken, clientId){
 async function getMicrosoftTikTokCode(email, refreshToken, clientId){
   if (!email || !refreshToken || !clientId) throw new Error('thiếu email/token/clientId');
   const tj = await refreshMicrosoftAccessToken(refreshToken, clientId);
+  if (!tj || typeof tj.access_token !== 'string' || tj.access_token.split('.').length < 3) {
+    throw new Error('OAuth không trả access_token hợp lệ cho Graph Mail.Read');
+  }
   const mr = await fetch('https://graph.microsoft.com/v1.0/me/messages?$top=25&$select=subject,bodyPreview,from,receivedDateTime&$orderby=receivedDateTime desc', { headers:{authorization:`Bearer ${tj.access_token}`} });
   if (!mr.ok) {
     let detail = '';

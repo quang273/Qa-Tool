@@ -449,11 +449,10 @@ function renderAccount(parts){
 
 function makePickId(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,10); }
 function getAccountFromQuery(req){
-  // Bản cũ từng đưa toàn bộ accountData lên URL, làm lộ token.
-  // Bản mới chỉ đưa accountId ngắn lên URL, dữ liệu đầy đủ nằm server-side để Get Code dùng.
+  // Chỉ hiển thị tài khoản khi URL có accountId. Không đọc cookie nữa.
+  // Nhờ vậy bấm tải lại/trở về trang chủ không giữ tài khoản vừa lấy trên màn hình.
   const picks = read('currentPicks');
-  const ck = parseCookie(req);
-  const id = String(req.query.accountId || ck.qf_current_account_id || '').trim();
+  const id = String(req.query.accountId || '').trim();
   if (id) {
     const item = picks[id] || null;
     return Array.isArray(item) ? item.map(String) : [];
@@ -476,6 +475,9 @@ app.get('/', (req,res)=>{
   if (settings.showVideos) body += card('🎬 Xem video', `<div class="btn-grid">${btn('/Shortcut/TikTok60','▶ Video TikTok 60p')}${btn('/Shortcut/TikTok180','⏱️ Video TikTok 180p','soft')}${btn('/r/RandomTiktok10','▶ Video TikTok 10p','soft')}${btn('/Shortcut/TikTokLite60','▶ Video Lite 60p')}${btn('/Shortcut/TikTokLite180','⏱️ Video Lite 180p','soft')}${btn('/r/RandomTiktokLite10','▶ Video Lite 10p','soft')}${btn('/Video/AddVideo','➕ Thêm video','soft')}</div>`);
   if (settings.showEmail) body += card('✉️ Link nhanh', links.length ? `<div class="list">${links.slice(0,5).map(l=>`<a class="list-item" target="_blank" href="${esc(l)}">${esc(l)}</a>`).join('')}</div>${btn('/Link/AddLink','Thêm link','soft')}` : `<div class="empty">Chưa có link.</div>${btn('/Link/AddLink','Thêm link','soft')}`);
   if (settings.showIcloud) body += card('☁️ iCloud', `<div class="field"><label>Tài khoản iCloud</label><div class="copy-row"><input readonly value="${esc(settings.icloudEmail||'Chưa cài')}"><button onclick="copyValue(this)">📋</button></div></div><div class="field"><label>Mật khẩu iCloud</label><div class="copy-row"><input readonly value="${esc(settings.icloudPassword||'')}"><button onclick="copyValue(this)">📋</button></div></div>`);
+  if (req.query.accountId) {
+    body += `<script>try{ history.replaceState(null,'','/'); }catch(e){}</script>`;
+  }
   res.send(layout('Trang chủ', body, 'home'));
 });
 
@@ -494,7 +496,7 @@ app.get('/Home/GetAccount', (req,res)=>{
   const keys = Object.keys(picks);
   for (const k of keys.slice(0, Math.max(0, keys.length - 100))) delete picks[k];
   write('currentPicks', picks);
-  res.cookie('qf_current_account_id', id, { maxAge: 365*24*60*60*1000, httpOnly:false, sameSite:'Lax' });
+  res.clearCookie('qf_current_account_id');
   res.redirect('/?accountId=' + urlEnc(id));
 });
 app.get('/Home/MarkUsed', (req,res)=>{ res.redirect('/'); });
@@ -614,44 +616,62 @@ async function refreshMicrosoftAccessToken(refreshToken, clientId){
 }
 
 async function refreshMicrosoftImapAccessToken(refreshToken, clientId){
-  // OAuth2/IMAP giống các tool đọc mail kiểu OAuth2: dùng resource outlook.office.com.
-  // Không bắt buộc access_token phải là JWT vì IMAP XOAUTH2 chỉ cần chuỗi token hợp lệ.
-  const tenants = ['common', 'consumers'];
+  // Ưu tiên OAuth2 kiểu legacy Live/Outlook giống các tool đọc mail OAuth2.
+  // Nhiều token M.C516... không cấp Graph Mail.Read nhưng vẫn dùng được với IMAP XOAUTH2.
+  let lastDetail = '';
+
+  const liveScopes = ['', 'wl.imap wl.offline_access', 'offline_access wl.imap'];
+  for (const scope of liveScopes) {
+    const body = new URLSearchParams({
+      client_id: clientId,
+      refresh_token: refreshToken,
+      grant_type: 'refresh_token'
+    });
+    if (scope) body.set('scope', scope);
+    try {
+      const tr = await fetch('https://login.live.com/oauth20_token.srf', {
+        method: 'POST',
+        headers: {'content-type':'application/x-www-form-urlencoded'},
+        body
+      });
+      const txt = await tr.text();
+      let tj = null; try { tj = JSON.parse(txt); } catch {}
+      if (tr.ok && tj && typeof tj.access_token === 'string' && tj.access_token.length > 20) return tj;
+      lastDetail = (tj && (tj.error_description || tj.error)) || txt || lastDetail;
+    } catch (e) { lastDetail = e.message || String(e); }
+  }
+
+  // Fallback endpoint Microsoft identity platform.
+  const tenants = ['consumers', 'common'];
   const scopes = [
     'https://outlook.office.com/IMAP.AccessAsUser.All offline_access',
-    'https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send offline_access',
-    'offline_access https://outlook.office.com/IMAP.AccessAsUser.All'
+    'offline_access https://outlook.office.com/IMAP.AccessAsUser.All',
+    ''
   ];
-  let lastDetail = '';
   for (const tenant of tenants) {
     for (const scope of scopes) {
       const body = new URLSearchParams({
         client_id: clientId,
         refresh_token: refreshToken,
-        grant_type: 'refresh_token',
-        scope
+        grant_type: 'refresh_token'
       });
-      const tr = await fetch(`https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`, {
-        method: 'POST',
-        headers: {'content-type':'application/x-www-form-urlencoded'},
-        body
-      });
-      if (tr.ok) {
-        const tj = await tr.json();
-        if (tj && typeof tj.access_token === 'string' && tj.access_token.length > 20) return tj;
-        lastDetail = 'OAuth2 IMAP không trả access_token hợp lệ';
-        continue;
-      }
+      if (scope) body.set('scope', scope);
       try {
-        const ej = await tr.json();
-        lastDetail = ej.error_description || ej.error || JSON.stringify(ej);
-      } catch {
-        lastDetail = await tr.text().catch(()=> '');
-      }
+        const tr = await fetch(`https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`, {
+          method: 'POST',
+          headers: {'content-type':'application/x-www-form-urlencoded'},
+          body
+        });
+        const txt = await tr.text();
+        let tj = null; try { tj = JSON.parse(txt); } catch {}
+        if (tr.ok && tj && typeof tj.access_token === 'string' && tj.access_token.length > 20) return tj;
+        lastDetail = (tj && (tj.error_description || tj.error)) || txt || lastDetail;
+      } catch (e) { lastDetail = e.message || String(e); }
     }
   }
   throw new Error('OAuth2 IMAP refresh lỗi' + (lastDetail ? ': ' + String(lastDetail).slice(0,220) : ''));
 }
+
 
 function isTikTokMailText(text){
   return /tiktok|account\.tiktok|@tiktok\.com|verification code|mã xác minh|is your verification code/i.test(String(text || ''));
@@ -727,20 +747,21 @@ async function getMicrosoftTikTokCodeImap(email, refreshToken, clientId){
 
 async function getMicrosoftTikTokCode(email, refreshToken, clientId){
   if (!email || !refreshToken || !clientId) throw new Error('thiếu email/token/clientId');
-  let graphErr = '';
-  try {
-    const code = await getMicrosoftTikTokCodeGraph(email, refreshToken, clientId);
-    if (code) return code;
-  } catch (e) {
-    graphErr = e.message || String(e);
-  }
+  // Với token M.Cxxx, ưu tiên OAuth2/IMAP trước vì nhiều token không có quyền Graph Mail.Read.
+  let imapErr = '';
   try {
     const code = await getMicrosoftTikTokCodeImap(email, refreshToken, clientId);
     if (code) return code;
-    if (graphErr) throw new Error('Không thấy mail TikTok mới. Graph: ' + graphErr);
+  } catch (e) {
+    imapErr = e.message || String(e);
+  }
+  try {
+    const code = await getMicrosoftTikTokCodeGraph(email, refreshToken, clientId);
+    if (code) return code;
+    if (imapErr) throw new Error('Không thấy mail TikTok mới. IMAP: ' + imapErr);
     return '';
   } catch (e) {
-    if (graphErr) throw new Error('OAuth2/IMAP lỗi: ' + (e.message || e) + ' | Graph: ' + graphErr);
+    if (imapErr) throw new Error('OAuth2/IMAP lỗi: ' + imapErr + ' | Graph: ' + (e.message || e));
     throw e;
   }
 }

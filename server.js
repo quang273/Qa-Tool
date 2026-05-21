@@ -230,7 +230,7 @@ app.use((req,res,next)=>{
   // API/phím tắt video phải công khai để iPhone Shortcut gọi được dù domain bật mật khẩu.
   const publicPaths = [
     '/Login', '/Login/Logout', '/app.css', '/app.js', '/favicon.ico',
-    '/api/otp', '/api/sim/status/', '/api/RandomTiktok', '/api/randomtiktok', '/api/text/',
+    '/api/otp', '/api/time', '/api/sim/status/', '/api/RandomTiktok', '/api/randomtiktok', '/api/text/',
     '/r/RandomTiktok', '/r/randomtiktok', '/Shortcut/', '/Auto/',
     // iPhone Tool cần đọc hàng chờ đổi tên ngay cả khi domain bật mật khẩu.
     '/IphoneTool/'
@@ -1437,7 +1437,8 @@ app.get('/otp',(req,res)=>{ const list=readDomainArray(req, 'user2fa'); const s=
 app.post('/otp',(req,res)=>{ const list=readDomainArray(req, 'user2fa'); let user=String(req.body.user||'').trim(); let secret=String(req.body.secret||'').trim(); const combined=String(req.body.combined||'').trim(); if(combined){ const parsed=parseUser2faLoose(combined); if(!user && parsed.user) user=parsed.user; if(!secret && parsed.secret) secret=parsed.secret; } if(user){ secret=String(secret||'').replace(/\s/g,'').toUpperCase(); list.push({user, secret}); } writeDomainArray(req, 'user2fa', list); res.redirect('/otp'); });
 app.get('/otp/export',(req,res)=>{ const list=readDomainArray(req, 'user2fa'); const txt=list.map(x=>x.secret?`${x.user}|${x.secret}`:String(x.user||'')).join('\n'); res.setHeader('Content-Type','text/plain; charset=utf-8'); res.setHeader('Content-Disposition','attachment; filename="user-2fa.txt"'); res.send(txt); });
 app.get('/otp/delete/:i',(req,res)=>{ const l=readDomainArray(req, 'user2fa'); l.splice(Number(req.params.i),1); writeDomainArray(req, 'user2fa', l); res.redirect('/otp'); });
-app.get('/api/otp',(req,res)=>res.json({otp:currentOtp(req.query.secret), remaining:remain()}));
+app.get('/api/time',(req,res)=>{ const now=Date.now(); res.setHeader('Cache-Control','no-store'); res.json({now, remaining:remain(), slot:Math.floor(now/30000)}); });
+app.get('/api/otp',(req,res)=>{ const now=Date.now(); res.setHeader('Cache-Control','no-store'); res.json({otp:currentOtp(req.query.secret), remaining:remain(), now, slot:Math.floor(now/30000)}); });
 
 
 const GRIZZLY_API = 'https://api.grizzlysms.com/stubs/handler_api.php';

@@ -19,22 +19,44 @@ async function pasteToInput(id){
 }
 
 async function postJson(url,data){const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)});return r.json()}
-function systemRemain(){return 30-(Math.floor(Date.now()/1000)%30)}
-let lastOtpSlot=-1;
-async function refreshSecretOtp(secret, codeEl, remainEl){try{const r=await fetch('/api/otp?secret='+encodeURIComponent(secret));const d=await r.json();if(codeEl)codeEl.textContent=d.otp||codeEl.textContent;if(remainEl)remainEl.textContent=systemRemain()+'s'}catch{}}
+
+// v72: đồng bộ countdown 2FA theo giờ server để nhiều iPhone mở cùng lúc không bị lệch nhau.
+let serverTimeOffsetMs = 0;
+let lastOtpSlot = -1;
+function syncedNow(){ return Date.now() + serverTimeOffsetMs; }
+function systemRemain(){
+  const sec = Math.floor(syncedNow() / 1000);
+  const rem = 30 - (sec % 30);
+  return rem === 0 ? 30 : rem;
+}
+function systemSlot(){ return Math.floor(syncedNow() / 30000); }
+async function syncServerTime(){
+  try{
+    const before = Date.now();
+    const r = await fetch('/api/time?ts=' + before, { cache:'no-store' });
+    const d = await r.json();
+    const after = Date.now();
+    if(d && d.now){
+      const networkMiddle = before + Math.round((after-before)/2);
+      serverTimeOffsetMs = Number(d.now) - networkMiddle;
+    }
+  }catch{}
+}
+async function refreshSecretOtp(secret, codeEl, remainEl){try{const r=await fetch('/api/otp?secret='+encodeURIComponent(secret), {cache:'no-store'});const d=await r.json();if(d&&d.now){serverTimeOffsetMs=Number(d.now)-Date.now();}if(codeEl)codeEl.textContent=d.otp||codeEl.textContent;if(remainEl)remainEl.textContent=systemRemain()+'s'}catch{}}
 function tickOtpCountdown(){
   const rem=systemRemain();
   document.querySelectorAll('.otp-remain').forEach(x=>x.textContent=rem+'s');
   const liveRemain=document.getElementById('liveRemain'); if(liveRemain) liveRemain.textContent=rem+'s';
-  const slot=Math.floor(Date.now()/30000);
-  if(slot!==lastOtpSlot || rem===30){
+  const slot=systemSlot();
+  if(slot!==lastOtpSlot){
     lastOtpSlot=slot;
     document.querySelectorAll('.otpcode[data-secret]').forEach(el=>refreshSecretOtp(el.dataset.secret,el,el.parentElement.querySelector('.otp-remain')));
     updateOtp();
+    updateUser2faOtp();
   }
 }
 document.addEventListener('click',async e=>{if(e.target&&e.target.id==='getCodeBtn'){const raw=document.getElementById('accountRaw')?.value||'';const box=document.getElementById('codeResult');box.innerHTML='<div class="card"><b>Đang lấy code...</b></div>';const d=await postJson('/Home/GetCode',{raw});if(d.status){box.innerHTML='<section class="card"><h2>✅ Kết quả Get Code</h2><div class="field"><label>Code</label><div class="copy-row"><input readonly value="'+(d.code||'')+'"><button onclick="copyValue(this)">📋</button></div></div><div class="field"><label>Content</label><div class="copy-row"><input readonly value="'+(d.content||'')+'"><button onclick="copyValue(this)">📋</button></div></div></section>'}else{box.innerHTML='<section class="card"><h2>⚠️ Chưa lấy được code</h2><p>'+ (d.message||'Không có code mới') +'</p>'+ (d.openUrl?'<a class="btn primary wide" target="_blank" href="'+d.openUrl+'">Mở email để lấy mã</a>':'') +'</section>'}}});
-async function updateOtp(){const inp=document.getElementById('liveSecret');if(!inp)return;const s=inp.value.trim();if(!s){document.getElementById('liveOtp').textContent='------';return}try{const r=await fetch('/api/otp?secret='+encodeURIComponent(s));const d=await r.json();document.getElementById('liveOtp').textContent=d.otp||'------';document.getElementById('liveRemain').textContent=systemRemain()+'s'}catch{}}
+async function updateOtp(){const inp=document.getElementById('liveSecret');if(!inp)return;const s=inp.value.trim();if(!s){document.getElementById('liveOtp').textContent='------';return}try{const r=await fetch('/api/otp?secret='+encodeURIComponent(s), {cache:'no-store'});const d=await r.json();if(d&&d.now){serverTimeOffsetMs=Number(d.now)-Date.now();}document.getElementById('liveOtp').textContent=d.otp||'------';document.getElementById('liveRemain').textContent=systemRemain()+'s'}catch{}}
 
 function isLikely2faSecret(v){
   const s=String(v||'').replace(/\s+/g,'').trim().toUpperCase();
@@ -81,7 +103,7 @@ async function updateUser2faOtp(){
   const box=document.getElementById('u2faLiveOtp');
   if(!box)return;
   if(!sec){ box.textContent='------'; return; }
-  try{ const r=await fetch('/api/otp?secret='+encodeURIComponent(sec)); const d=await r.json(); box.textContent=d.otp||'------'; }catch{ box.textContent='------'; }
+  try{ const r=await fetch('/api/otp?secret='+encodeURIComponent(sec), {cache:'no-store'}); const d=await r.json(); if(d&&d.now){serverTimeOffsetMs=Number(d.now)-Date.now();} box.textContent=d.otp||'------'; }catch{ box.textContent='------'; }
 }
 document.addEventListener('input',e=>{
   if(e.target&&e.target.id==='u2faCombined') parseUser2faInput();
@@ -89,7 +111,9 @@ document.addEventListener('input',e=>{
   if(e.target&&e.target.id==='u2faSecret'){ syncCombinedFromFields(); updateUser2faOtp(); }
 });
 
-setInterval(()=>{tickOtpCountdown(); updateUser2faOtp();},500);tickOtpCountdown();
+syncServerTime().then(()=>{ tickOtpCountdown(); updateUser2faOtp(); });
+setInterval(tickOtpCountdown,500);
+setInterval(syncServerTime,30000);
 
 async function sendNameToTool(name, mode){
   const box=document.getElementById('toolSendResult');

@@ -801,6 +801,24 @@ app.post('/Home/GetCode', async (req,res)=>{
   }
   return res.json({ status:false, message:'Dạng tài khoản này chưa có nguồn đọc code. Hotmail dùng OAuth2; mailfake dùng dạng email|pass; chỉ lấy code TikTok.' });
 });
+
+function hotmailDebug(event, data = {}) {
+  try {
+    const safe = { ...(data || {}) };
+    if (safe.email) {
+      const e = String(safe.email);
+      safe.email = e.replace(/^(.{2}).*(@.*)$/, '$1***$2');
+    }
+    if (safe.clientId) safe.clientId = String(safe.clientId).slice(0, 8) + '...';
+    if (safe.accessToken) safe.accessToken = String(safe.accessToken).slice(0, 12) + '...';
+    if (safe.refreshToken) safe.refreshToken = String(safe.refreshToken).slice(0, 8) + '...';
+    if (safe.error) safe.error = String(safe.error).slice(0, 500);
+    console.log('[HOTMAIL_DEBUG]', new Date().toISOString(), event, JSON.stringify(safe));
+  } catch (e) {
+    console.log('[HOTMAIL_DEBUG]', new Date().toISOString(), event, data);
+  }
+}
+
 async function refreshMicrosoftAccessToken(refreshToken, clientId){
   // Access token cho Microsoft Graph. Một số token cũ không có quyền Graph,
   // khi đó hàm getMicrosoftTikTokCode sẽ tự fallback sang IMAP OAuth2.
@@ -912,9 +930,13 @@ function extractTikTokCode(text){
 async function getMicrosoftTikTokCodeOutlookRest(email, refreshToken, clientId){
   // Fallback cho token OAuth2 kiểu DONGVANFB: thử tất cả access_token lấy được,
   // không dùng $select DateTimeReceived vì một số endpoint Outlook báo property này không tồn tại.
+  hotmailDebug('START_OUTLOOK_REST', { email, clientId });
   let candidates = [];
   try { candidates = await getMicrosoftImapAccessTokenCandidates(refreshToken, clientId); }
-  catch (e) { candidates = []; }
+  catch (e) {
+    hotmailDebug('OUTLOOK_REST_CANDIDATE_ERROR', { email, error: e.message || String(e) });
+    candidates = [];
+  }
   if (!candidates.length) {
     const tj = await refreshMicrosoftImapAccessToken(refreshToken, clientId);
     if (tj?.access_token) candidates.push({ label:'refreshMicrosoftImapAccessToken', accessToken: tj.access_token });
@@ -928,46 +950,65 @@ async function getMicrosoftTikTokCodeOutlookRest(email, refreshToken, clientId){
     'https://outlook.live.com/api/v2.0/me/mailfolders/inbox/messages?$top=35'
   ];
   const errors = [];
+  hotmailDebug('OUTLOOK_REST_CANDIDATES', { email, count: candidates.length, labels: candidates.map(c => c.label).slice(0, 20) });
   for (const c of candidates) {
     for (const url of baseUrls) {
+      const started = Date.now();
+      hotmailDebug('TRY_OUTLOOK_REST', { email, label: c.label, endpoint: url.replace(/\?.*$/, '') });
       const r = await fetch(url, { headers:{ authorization:`Bearer ${c.accessToken}`, accept:'application/json' } });
       const txt = await r.text();
       let j = null; try { j = txt ? JSON.parse(txt) : null; } catch {}
       if (!r.ok) {
         const detail = (j && (j.error?.message || j.error_description || j.error)) || txt || `HTTP ${r.status}`;
+        hotmailDebug('FAIL_OUTLOOK_REST', { email, label: c.label, endpoint: url.replace(/\?.*$/, ''), status: r.status, ms: Date.now() - started, error: detail });
         errors.push(`${c.label}: ${String(detail).slice(0,140)}`);
         continue;
       }
       let arr = Array.isArray(j?.value) ? j.value : [];
+      hotmailDebug('OUTLOOK_REST_MESSAGES', { email, label: c.label, endpoint: url.replace(/\?.*$/, ''), count: arr.length, ms: Date.now() - started });
       arr.sort((a,b)=> new Date(b.ReceivedDateTime || b.DateTimeReceived || b.CreatedDateTime || 0) - new Date(a.ReceivedDateTime || a.DateTimeReceived || a.CreatedDateTime || 0));
       for (const m of arr) {
         const from = m.From?.EmailAddress?.Address || m.From?.EmailAddress?.Name || m.From?.EmailAddress?.address || '';
         const text = [from, m.Subject || m.subject, m.BodyPreview || m.bodyPreview, m.Body?.Content || m.body?.content].filter(Boolean).join(' ');
         const code = extractTikTokCode(text);
-        if (code) return code;
+        if (code) {
+          hotmailDebug('SUCCESS_OUTLOOK_REST', { email, label: c.label, endpoint: url.replace(/\?.*$/, ''), ms: Date.now() - started });
+          return code;
+        }
       }
+      hotmailDebug('NO_CODE_OUTLOOK_REST', { email, label: c.label, endpoint: url.replace(/\?.*$/, ''), ms: Date.now() - started });
     }
   }
   throw new Error('Outlook REST lỗi' + (errors.length ? ': ' + errors.slice(0,3).join(' | ') : ''));
 }
 
 async function getMicrosoftTikTokCodeGraph(email, refreshToken, clientId){
+  hotmailDebug('START_GRAPH', { email, clientId });
   const tj = await refreshMicrosoftAccessToken(refreshToken, clientId);
   if (!tj || typeof tj.access_token !== 'string' || tj.access_token.split('.').length < 3) {
+    hotmailDebug('FAIL_GRAPH_TOKEN', { email, error: 'OAuth không trả access_token hợp lệ cho Graph Mail.Read' });
     throw new Error('OAuth không trả access_token hợp lệ cho Graph Mail.Read');
   }
+  const started = Date.now();
+  hotmailDebug('TRY_GRAPH', { email });
   const mr = await fetch('https://graph.microsoft.com/v1.0/me/messages?$top=25&$select=subject,bodyPreview,from,receivedDateTime&$orderby=receivedDateTime desc', { headers:{authorization:`Bearer ${tj.access_token}`} });
   if (!mr.ok) {
     let detail = '';
     try { const ej = await mr.json(); detail = ej.error?.message || ej.error || ''; } catch { detail = await mr.text().catch(()=> ''); }
+    hotmailDebug('FAIL_GRAPH', { email, status: mr.status, ms: Date.now() - started, error: detail });
     throw new Error('Graph Mail.Read lỗi' + (detail ? ': ' + String(detail).slice(0,220) : ''));
   }
   const mj = await mr.json();
+  hotmailDebug('GRAPH_MESSAGES', { email, count: (mj.value || []).length, ms: Date.now() - started });
   for (const m of (mj.value || [])) {
     const text = [m.subject, m.bodyPreview, m.from?.emailAddress?.address].join(' ');
     const code = extractTikTokCode(text);
-    if (code) return code;
+    if (code) {
+      hotmailDebug('SUCCESS_GRAPH', { email, ms: Date.now() - started });
+      return code;
+    }
   }
+  hotmailDebug('NO_CODE_GRAPH', { email, ms: Date.now() - started });
   return '';
 }
 
@@ -1080,13 +1121,19 @@ async function readTikTokCodeByImapAccessToken(email, accessToken){
 
 async function getMicrosoftTikTokCodeImap(email, refreshToken, clientId){
   if (!ImapFlow || !simpleParser) throw new Error('Thiếu thư viện imapflow/mailparser. Hãy chạy npm install sau khi cập nhật package.json.');
+  hotmailDebug('START_IMAP', { email, clientId });
   const candidates = await getMicrosoftImapAccessTokenCandidates(refreshToken, clientId);
+  hotmailDebug('IMAP_CANDIDATES', { email, count: candidates.length, labels: candidates.map(c => c.label).slice(0, 20) });
   const errors = [];
   for (const c of candidates) {
+    hotmailDebug('TRY_IMAP', { email, label: c.label });
+    const started = Date.now();
     try {
       const code = await readTikTokCodeByImapAccessToken(email, c.accessToken);
+      hotmailDebug(code ? 'SUCCESS_IMAP' : 'NO_CODE_IMAP', { email, label: c.label, ms: Date.now() - started });
       if (code) return code;
     } catch (e) {
+      hotmailDebug('FAIL_IMAP', { email, label: c.label, ms: Date.now() - started, error: e.message || String(e) });
       errors.push(`${c.label}: ${e.message || e}`);
       continue;
     }
@@ -1099,27 +1146,41 @@ async function getMicrosoftTikTokCode(email, refreshToken, clientId){
   if (!email || !refreshToken || !clientId) throw new Error('thiếu email/token/clientId');
   // Với token M.Cxxx, thử nhiều đường đọc mail:
   // 1) IMAP OAuth2, 2) Outlook REST legacy, 3) Graph Mail.Read.
+  hotmailDebug('START_HOTMAIL_GET_CODE', { email, clientId });
   let imapErr = '';
   let restErr = '';
   try {
     const code = await getMicrosoftTikTokCodeImap(email, refreshToken, clientId);
-    if (code) return code;
+    if (code) {
+      hotmailDebug('DONE_HOTMAIL_GET_CODE', { email, method: 'IMAP' });
+      return code;
+    }
   } catch (e) {
     imapErr = e.message || String(e);
+    hotmailDebug('PATH_IMAP_ERROR', { email, error: imapErr });
   }
   try {
     const code = await getMicrosoftTikTokCodeOutlookRest(email, refreshToken, clientId);
-    if (code) return code;
+    if (code) {
+      hotmailDebug('DONE_HOTMAIL_GET_CODE', { email, method: 'OUTLOOK_REST' });
+      return code;
+    }
   } catch (e) {
     restErr = e.message || String(e);
+    hotmailDebug('PATH_OUTLOOK_REST_ERROR', { email, error: restErr });
   }
   try {
     const code = await getMicrosoftTikTokCodeGraph(email, refreshToken, clientId);
-    if (code) return code;
+    if (code) {
+      hotmailDebug('DONE_HOTMAIL_GET_CODE', { email, method: 'GRAPH' });
+      return code;
+    }
     if (imapErr || restErr) throw new Error('Không thấy mail TikTok mới. IMAP: ' + imapErr + ' | Outlook REST: ' + restErr);
+    hotmailDebug('DONE_HOTMAIL_GET_CODE', { email, method: 'NONE_NO_CODE' });
     return '';
   } catch (e) {
     const details = [imapErr && ('IMAP: ' + imapErr), restErr && ('Outlook REST: ' + restErr), 'Graph: ' + (e.message || e)].filter(Boolean).join(' | ');
+    hotmailDebug('FAIL_HOTMAIL_GET_CODE', { email, error: details });
     throw new Error(details);
   }
 }

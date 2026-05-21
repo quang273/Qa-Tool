@@ -1140,61 +1140,97 @@ app.get('/Account/Clear',(req,res)=>{ writeDomainArray(req, 'accounts', []); wri
 
 
 function shortcutInstallUrl(kind){
+  // v76: hardcode link phím tắt 180p, không phụ thuộc biến môi trường Render nữa.
   const map = {
-    tiktok180: process.env.SHORTCUT_TIKTOK_180_URL || '',
-    lite180: process.env.SHORTCUT_TIKTOK_LITE_180_URL || '',
-    tiktok60: process.env.SHORTCUT_TIKTOK_60_URL || '',
-    lite60: process.env.SHORTCUT_TIKTOK_LITE_60_URL || '',
-    tiktok10: process.env.SHORTCUT_TIKTOK_10_URL || '',
-    lite10: process.env.SHORTCUT_TIKTOK_LITE_10_URL || ''
+    tiktok180: 'https://www.icloud.com/shortcuts/c58c5d740984496a9027af8b37aedace',
+    lite180: 'https://www.icloud.com/shortcuts/0571badcac4d4fc1bf42a3bc98c9f227',
+    tiktok60: '',
+    lite60: '',
+    tiktok10: '',
+    lite10: ''
   };
   return map[kind] || '';
+}
+function isAndroidReq(req){
+  return /Android/i.test(String(req.headers['user-agent'] || ''));
 }
 function shortcutPage(req, res, title, apiPath, directPath, kind, autoPath){
   const base = `${req.protocol}://${req.get('host')}`;
   const install = shortcutInstallUrl(kind);
   const installBtn = install
     ? `<a class="btn primary wide huge-btn" href="${esc(install)}">📲 Thêm phím tắt iPhone</a>`
-    : `<a class="btn primary wide huge-btn" href="shortcuts://">📲 Mở ứng dụng Phím tắt</a><div class="notice warn"><b>Chưa có link cài phím tắt.</b><br>Sau khi bạn tạo phím tắt và chia sẻ iCloud, thêm link vào biến môi trường Render để nút này mở đúng trang “Thêm phím tắt”.</div>`;
+    : `<a class="btn primary wide huge-btn" href="shortcuts://">📲 Mở ứng dụng Phím tắt</a>`;
   const body = card('⏱️ '+esc(title), `
-    <div class="shortcut-hero-box"><b>iPhone:</b> bấm nút bên dưới để mở trang thêm phím tắt như ảnh. Phím tắt chỉ gọi API của domain này, không lộ GitHub gốc.</div>
     ${installBtn}
     <div class="field"><label>API JSON dùng trong Phím tắt</label><div class="copy-row"><input readonly value="${esc(base+apiPath)}"><button onclick="copyValue(this)">📋</button></div></div>
     <div class="field"><label>Link mở ngẫu nhiên 1 video</label><div class="copy-row"><input readonly value="${esc(base+directPath)}"><button onclick="copyValue(this)">📋</button></div></div>
-    <div class="shortcut-hero-box"><b>Android:</b> web không thể chạy nền chắc chắn như iPhone Shortcuts. Có thể dùng trang tự mở khi còn đang mở trình duyệt.</div>
-    <a class="btn soft wide huge-btn" href="${esc(autoPath)}">🤖 Mở chế độ Android tự mở mỗi 60 phút</a>
+    <div class="shortcut-hero-box"><b>Android:</b> nếu bấm bằng Android sẽ tự chuyển sang chế độ mở link random 60 phút, tổng 3 lần cho gói 180p.</div>
+    <a class="btn soft wide huge-btn" href="${esc(autoPath)}">🤖 Mở chế độ Android 180p</a>
     <a class="btn soft wide" href="/">← Quay lại trang chủ</a>
   `);
   res.send(layout(title, body, 'home'));
 }
-app.get('/Shortcut/TikTok180',(req,res)=> shortcutPage(req,res,'Treo 180p TikTok','/api/RandomTiktok180','/r/RandomTiktok180','tiktok180','/Auto/TikTok180'));
-app.get('/Shortcut/TikTokLite180',(req,res)=> shortcutPage(req,res,'Treo 180p TikTok Lite','/api/RandomTiktokLite180','/r/RandomTiktokLite180','lite180','/Auto/TikTokLite180'));
-app.get('/Shortcut/TikTok60',(req,res)=> shortcutPage(req,res,'Treo 60p TikTok','/api/RandomTiktok60','/r/RandomTiktok60','tiktok60','/Auto/TikTok60'));
-app.get('/Shortcut/TikTokLite60',(req,res)=> shortcutPage(req,res,'Treo 60p TikTok Lite','/api/RandomTiktokLite60','/r/RandomTiktokLite60','lite60','/Auto/TikTokLite60'));
-function autoAndroidPage(req,res,title,apiPath,waitSeconds){
+app.get('/Shortcut/TikTok180',(req,res)=>{
+  if (isAndroidReq(req)) return autoAndroidPage(req,res,'TikTok 180p Android: tự mở 3 lần, mỗi 60 phút','/api/RandomTiktok60',3600,3);
+  return shortcutPage(req,res,'Treo 180p TikTok','/api/RandomTiktok180','/r/RandomTiktok180','tiktok180','/Auto/TikTok180');
+});
+app.get('/Shortcut/TikTokLite180',(req,res)=>{
+  if (isAndroidReq(req)) return autoAndroidPage(req,res,'TikTok Lite 180p Android: tự mở 3 lần, mỗi 60 phút','/api/RandomTiktokLite60',3600,3);
+  return shortcutPage(req,res,'Treo 180p TikTok Lite','/api/RandomTiktokLite180','/r/RandomTiktokLite180','lite180','/Auto/TikTokLite180');
+});
+app.get('/Shortcut/TikTok60',(req,res)=> res.redirect('/r/RandomTiktok60'));
+app.get('/Shortcut/TikTokLite60',(req,res)=> res.redirect('/r/RandomTiktokLite60'));
+function autoAndroidPage(req,res,title,apiPath,waitSeconds,maxRuns=0){
+  const runsText = maxRuns ? `Tổng ${maxRuns} lần. Sau mỗi lần sẽ chờ 60 phút rồi mở link tiếp theo.` : 'Trang này sẽ tiếp tục theo chu kỳ nếu trình duyệt còn giữ trang.';
   const body = card('🤖 '+esc(title), `
-    <div class="notice ok"><b>Chế độ Android</b><br>Trang này sẽ lấy link ngẫu nhiên rồi mở. Nếu trình duyệt còn giữ trang này, nó sẽ tiếp tục theo chu kỳ.</div>
-    <div class="big-result" id="autoCount">Chuẩn bị mở...</div>
-    <button class="btn primary wide huge-btn" id="openNowBtn">▶ Mở ngay 1 link</button>
+    <div class="notice ok"><b>Chế độ Android</b><br>${runsText}<br>Video 180p trên Android dùng link random 60p và chạy 3 lượt.</div>
+    <div class="big-result" id="autoCount">Chuẩn bị mở lượt 1${maxRuns ? '/' + maxRuns : ''}...</div>
+    <button class="btn primary wide huge-btn" id="openNowBtn">▶ Bắt đầu / mở ngay</button>
     <a class="btn soft wide" href="/">← Quay lại</a>
     <script>
       const API=${JSON.stringify(apiPath)};
       const WAIT=${Number(waitSeconds)||3600};
-      let next=5;
+      const MAX_RUNS=${Number(maxRuns)||0};
+      let next=3;
+      let opened=0;
+      let running=true;
       async function openRandom(){
-        try{ const r=await fetch(API); const d=await r.json(); if(d && (d.url||d.data)){ location.href=d.url||d.data; } }
-        catch(e){ document.getElementById('autoCount').textContent='Lỗi: '+e.message; }
+        if(MAX_RUNS && opened>=MAX_RUNS){
+          running=false;
+          document.getElementById('autoCount').textContent='Đã hoàn tất '+opened+'/'+MAX_RUNS+' lượt.';
+          return;
+        }
+        try{
+          const r=await fetch(API);
+          const d=await r.json();
+          const url=d && (d.url||d.data);
+          if(!url) throw new Error('API chưa trả link video');
+          opened++;
+          document.getElementById('autoCount').textContent='Đã mở lượt '+opened+(MAX_RUNS?'/'+MAX_RUNS:'')+'. Lượt tiếp theo sau '+WAIT+' giây.';
+          const w=window.open(url, '_blank');
+          if(!w){ location.href=url; return; }
+          next=WAIT;
+          if(MAX_RUNS && opened>=MAX_RUNS){
+            running=false;
+            document.getElementById('autoCount').textContent='Đã mở đủ '+opened+'/'+MAX_RUNS+' lượt.';
+          }
+        } catch(e){ document.getElementById('autoCount').textContent='Lỗi: '+e.message; }
       }
-      document.getElementById('openNowBtn').onclick=openRandom;
-      setInterval(()=>{ next--; document.getElementById('autoCount').textContent='Tự mở sau '+next+' giây'; if(next<=0){ openRandom(); next=WAIT; } },1000);
+      document.getElementById('openNowBtn').onclick=function(){ next=0; openRandom(); };
+      setInterval(()=>{
+        if(!running) return;
+        next--;
+        document.getElementById('autoCount').textContent='Tự mở lượt '+(opened+1)+(MAX_RUNS?'/'+MAX_RUNS:'')+' sau '+Math.max(0,next)+' giây';
+        if(next<=0) openRandom();
+      },1000);
     </script>
   `);
   res.send(layout(title, body, 'home'));
 }
-app.get('/Auto/TikTok180',(req,res)=>autoAndroidPage(req,res,'TikTok 180p tự mở mỗi 60 phút','/api/RandomTiktok180',3600));
-app.get('/Auto/TikTokLite180',(req,res)=>autoAndroidPage(req,res,'TikTok Lite 180p tự mở mỗi 60 phút','/api/RandomTiktokLite180',3600));
-app.get('/Auto/TikTok60',(req,res)=>autoAndroidPage(req,res,'TikTok 60p tự mở mỗi 60 phút','/api/RandomTiktok60',3600));
-app.get('/Auto/TikTokLite60',(req,res)=>autoAndroidPage(req,res,'TikTok Lite 60p tự mở mỗi 60 phút','/api/RandomTiktokLite60',3600));
+app.get('/Auto/TikTok180',(req,res)=>autoAndroidPage(req,res,'TikTok 180p tự mở mỗi 60 phút','/api/RandomTiktok60',3600,3));
+app.get('/Auto/TikTokLite180',(req,res)=>autoAndroidPage(req,res,'TikTok Lite 180p tự mở mỗi 60 phút','/api/RandomTiktokLite60',3600,3));
+app.get('/Auto/TikTok60',(req,res)=>autoAndroidPage(req,res,'TikTok 60p tự mở mỗi 60 phút','/api/RandomTiktok60',3600,1));
+app.get('/Auto/TikTokLite60',(req,res)=>autoAndroidPage(req,res,'TikTok Lite 60p tự mở mỗi 60 phút','/api/RandomTiktokLite60',3600,1));
 
 app.get('/Video/AddVideo',(req,res)=>{
   const store=readVideoStore();

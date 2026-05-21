@@ -801,24 +801,6 @@ app.post('/Home/GetCode', async (req,res)=>{
   }
   return res.json({ status:false, message:'Dạng tài khoản này chưa có nguồn đọc code. Hotmail dùng OAuth2; mailfake dùng dạng email|pass; chỉ lấy code TikTok.' });
 });
-
-function hotmailDebug(event, data = {}) {
-  try {
-    const safe = { ...(data || {}) };
-    if (safe.email) {
-      const e = String(safe.email);
-      safe.email = e.replace(/^(.{2}).*(@.*)$/, '$1***$2');
-    }
-    if (safe.clientId) safe.clientId = String(safe.clientId).slice(0, 8) + '...';
-    if (safe.accessToken) safe.accessToken = String(safe.accessToken).slice(0, 12) + '...';
-    if (safe.refreshToken) safe.refreshToken = String(safe.refreshToken).slice(0, 8) + '...';
-    if (safe.error) safe.error = String(safe.error).slice(0, 500);
-    console.log('[HOTMAIL_DEBUG]', new Date().toISOString(), event, JSON.stringify(safe));
-  } catch (e) {
-    console.log('[HOTMAIL_DEBUG]', new Date().toISOString(), event, data);
-  }
-}
-
 async function refreshMicrosoftAccessToken(refreshToken, clientId){
   // Access token cho Microsoft Graph. Một số token cũ không có quyền Graph,
   // khi đó hàm getMicrosoftTikTokCode sẽ tự fallback sang IMAP OAuth2.
@@ -928,156 +910,80 @@ function extractTikTokCode(text){
 
 
 async function getMicrosoftTikTokCodeOutlookRest(email, refreshToken, clientId){
-  // Fallback cho token OAuth2 kiểu DONGVANFB: thử tất cả access_token lấy được,
-  // không dùng $select DateTimeReceived vì một số endpoint Outlook báo property này không tồn tại.
-  hotmailDebug('START_OUTLOOK_REST', { email, clientId });
-  let candidates = [];
-  try { candidates = await getMicrosoftImapAccessTokenCandidates(refreshToken, clientId); }
-  catch (e) {
-    hotmailDebug('OUTLOOK_REST_CANDIDATE_ERROR', { email, error: e.message || String(e) });
-    candidates = [];
-  }
-  if (!candidates.length) {
-    const tj = await refreshMicrosoftImapAccessToken(refreshToken, clientId);
-    if (tj?.access_token) candidates.push({ label:'refreshMicrosoftImapAccessToken', accessToken: tj.access_token });
-  }
-  if (!candidates.length) throw new Error('OAuth2 không trả access_token Outlook hợp lệ');
-
-  const baseUrls = [
-    'https://outlook.office.com/api/v2.0/me/messages?$top=35',
-    'https://outlook.office.com/api/v2.0/me/mailfolders/inbox/messages?$top=35',
-    'https://outlook.live.com/api/v2.0/me/messages?$top=35',
-    'https://outlook.live.com/api/v2.0/me/mailfolders/inbox/messages?$top=35'
-  ];
+  // v71: fallback duy nhất đã chứng minh chạy nhanh trong log:
+  // endpoint https://outlook.office.com/api/v2.0/me/messages với cùng access_token primary.
+  const candidates = await getMicrosoftImapAccessTokenCandidates(refreshToken, clientId);
+  const url = 'https://outlook.office.com/api/v2.0/me/messages?$top=15';
   const errors = [];
-  hotmailDebug('OUTLOOK_REST_CANDIDATES', { email, count: candidates.length, labels: candidates.map(c => c.label).slice(0, 20) });
   for (const c of candidates) {
-    for (const url of baseUrls) {
-      const started = Date.now();
-      hotmailDebug('TRY_OUTLOOK_REST', { email, label: c.label, endpoint: url.replace(/\?.*$/, '') });
-      const r = await fetch(url, { headers:{ authorization:`Bearer ${c.accessToken}`, accept:'application/json' } });
-      const txt = await r.text();
-      let j = null; try { j = txt ? JSON.parse(txt) : null; } catch {}
-      if (!r.ok) {
-        const detail = (j && (j.error?.message || j.error_description || j.error)) || txt || `HTTP ${r.status}`;
-        hotmailDebug('FAIL_OUTLOOK_REST', { email, label: c.label, endpoint: url.replace(/\?.*$/, ''), status: r.status, ms: Date.now() - started, error: detail });
-        errors.push(`${c.label}: ${String(detail).slice(0,140)}`);
-        continue;
-      }
-      let arr = Array.isArray(j?.value) ? j.value : [];
-      hotmailDebug('OUTLOOK_REST_MESSAGES', { email, label: c.label, endpoint: url.replace(/\?.*$/, ''), count: arr.length, ms: Date.now() - started });
-      arr.sort((a,b)=> new Date(b.ReceivedDateTime || b.DateTimeReceived || b.CreatedDateTime || 0) - new Date(a.ReceivedDateTime || a.DateTimeReceived || a.CreatedDateTime || 0));
-      for (const m of arr) {
-        const from = m.From?.EmailAddress?.Address || m.From?.EmailAddress?.Name || m.From?.EmailAddress?.address || '';
-        const text = [from, m.Subject || m.subject, m.BodyPreview || m.bodyPreview, m.Body?.Content || m.body?.content].filter(Boolean).join(' ');
-        const code = extractTikTokCode(text);
-        if (code) {
-          hotmailDebug('SUCCESS_OUTLOOK_REST', { email, label: c.label, endpoint: url.replace(/\?.*$/, ''), ms: Date.now() - started });
-          return code;
-        }
-      }
-      hotmailDebug('NO_CODE_OUTLOOK_REST', { email, label: c.label, endpoint: url.replace(/\?.*$/, ''), ms: Date.now() - started });
+    const started = Date.now();
+    const r = await fetch(url, { headers:{ authorization:`Bearer ${c.accessToken}`, accept:'application/json' } });
+    const txt = await r.text();
+    let j = null; try { j = txt ? JSON.parse(txt) : null; } catch {}
+    if (!r.ok) {
+      const detail = (j && (j.error?.message || j.error_description || j.error)) || txt || `HTTP ${r.status}`;
+      errors.push(`${c.label}: ${String(detail).slice(0,160)}`);
+      continue;
     }
+    let arr = Array.isArray(j?.value) ? j.value : [];
+    arr.sort((a,b)=> new Date(b.ReceivedDateTime || b.DateTimeReceived || b.CreatedDateTime || 0) - new Date(a.ReceivedDateTime || a.DateTimeReceived || a.CreatedDateTime || 0));
+    for (const m of arr) {
+      const from = m.From?.EmailAddress?.Address || m.From?.EmailAddress?.Name || m.From?.EmailAddress?.address || '';
+      const text = [from, m.Subject || m.subject, m.BodyPreview || m.bodyPreview, m.Body?.Content || m.body?.content].filter(Boolean).join(' ');
+      const code = extractTikTokCode(text);
+      if (code) return code;
+    }
+    // Không có code thì dừng, không thử endpoint phụ để giữ tốc độ.
+    return '';
   }
-  throw new Error('Outlook REST lỗi' + (errors.length ? ': ' + errors.slice(0,3).join(' | ') : ''));
+  throw new Error('Outlook REST primary lỗi' + (errors.length ? ': ' + errors.join(' | ') : ''));
 }
 
 async function getMicrosoftTikTokCodeGraph(email, refreshToken, clientId){
-  hotmailDebug('START_GRAPH', { email, clientId });
   const tj = await refreshMicrosoftAccessToken(refreshToken, clientId);
   if (!tj || typeof tj.access_token !== 'string' || tj.access_token.split('.').length < 3) {
-    hotmailDebug('FAIL_GRAPH_TOKEN', { email, error: 'OAuth không trả access_token hợp lệ cho Graph Mail.Read' });
     throw new Error('OAuth không trả access_token hợp lệ cho Graph Mail.Read');
   }
-  const started = Date.now();
-  hotmailDebug('TRY_GRAPH', { email });
   const mr = await fetch('https://graph.microsoft.com/v1.0/me/messages?$top=25&$select=subject,bodyPreview,from,receivedDateTime&$orderby=receivedDateTime desc', { headers:{authorization:`Bearer ${tj.access_token}`} });
   if (!mr.ok) {
     let detail = '';
     try { const ej = await mr.json(); detail = ej.error?.message || ej.error || ''; } catch { detail = await mr.text().catch(()=> ''); }
-    hotmailDebug('FAIL_GRAPH', { email, status: mr.status, ms: Date.now() - started, error: detail });
     throw new Error('Graph Mail.Read lỗi' + (detail ? ': ' + String(detail).slice(0,220) : ''));
   }
   const mj = await mr.json();
-  hotmailDebug('GRAPH_MESSAGES', { email, count: (mj.value || []).length, ms: Date.now() - started });
   for (const m of (mj.value || [])) {
     const text = [m.subject, m.bodyPreview, m.from?.emailAddress?.address].join(' ');
     const code = extractTikTokCode(text);
-    if (code) {
-      hotmailDebug('SUCCESS_GRAPH', { email, ms: Date.now() - started });
-      return code;
-    }
+    if (code) return code;
   }
-  hotmailDebug('NO_CODE_GRAPH', { email, ms: Date.now() - started });
   return '';
 }
 
 async function getMicrosoftImapAccessTokenCandidates(refreshToken, clientId){
-  // Không bỏ các kiểu cũ. Bổ sung riêng case token M.C52x đọc được bằng OAuth2 như DONGVANFB:
-  // refresh bằng scope IMAP Outlook rồi thử IMAP trước. Tránh return token đầu tiên nếu token đó không đăng nhập IMAP được.
-  const candidates = [];
-  const seen = new Set();
-  const addToken = (label, tj) => {
-    const accessToken = tj && tj.access_token;
-    if (!accessToken || typeof accessToken !== 'string' || accessToken.length < 20) return;
-    if (seen.has(accessToken)) return;
-    seen.add(accessToken);
-    candidates.push({ label, accessToken });
-  };
-  const requests = [];
-
-  // Ưu tiên đúng loại Outlook IMAP OAuth2 trước.
-  for (const tenant of ['consumers', 'common']) {
-    for (const scope of [
-      'https://outlook.office.com/IMAP.AccessAsUser.All offline_access',
-      'offline_access https://outlook.office.com/IMAP.AccessAsUser.All',
-      'https://outlook.office365.com/IMAP.AccessAsUser.All offline_access',
-      'offline_access https://outlook.office365.com/IMAP.AccessAsUser.All'
-    ]) {
-      requests.push({
-        label: `${tenant} ${scope}`,
-        url: `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`,
-        body: { client_id: clientId, refresh_token: refreshToken, grant_type: 'refresh_token', scope }
-      });
-    }
+  // v71 tối ưu tốc độ theo log thực tế:
+  // Đường thành công ổn nhất là consumers + https://outlook.office.com/IMAP.AccessAsUser.All offline_access.
+  // Không thử 7 candidate nữa để tránh chậm 30-40 giây khi một số scope fail.
+  const body = new URLSearchParams({
+    client_id: clientId,
+    refresh_token: refreshToken,
+    grant_type: 'refresh_token',
+    scope: 'https://outlook.office.com/IMAP.AccessAsUser.All offline_access'
+  });
+  const tr = await fetch('https://login.microsoftonline.com/consumers/oauth2/v2.0/token', {
+    method: 'POST',
+    headers: {'content-type':'application/x-www-form-urlencoded'},
+    body
+  });
+  const txt = await tr.text();
+  let tj = null; try { tj = JSON.parse(txt); } catch {}
+  if (tr.ok && tj && typeof tj.access_token === 'string' && tj.access_token.length > 20) {
+    return [{
+      label: 'consumers https://outlook.office.com/IMAP.AccessAsUser.All offline_access',
+      accessToken: tj.access_token
+    }];
   }
-
-  // Giữ các kiểu legacy cũ cho các token khác.
-  for (const scope of ['wl.imap wl.offline_access', 'offline_access wl.imap', 'service::outlook.office.com::MBI_SSL', 'service::outlook.office.com::MBI_SSL wl.offline_access', 'wl.offline_access service::outlook.office.com::MBI_SSL', '']) {
-    requests.push({
-      label: `login.live.com ${scope || 'no-scope'}`,
-      url: 'https://login.live.com/oauth20_token.srf',
-      body: { client_id: clientId, refresh_token: refreshToken, grant_type: 'refresh_token', ...(scope ? { scope } : {}) }
-    });
-  }
-
-  // Giữ fallback v2 không scope cuối cùng.
-  for (const tenant of ['consumers', 'common']) {
-    requests.push({
-      label: `${tenant} no-scope`,
-      url: `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`,
-      body: { client_id: clientId, refresh_token: refreshToken, grant_type: 'refresh_token' }
-    });
-  }
-
-  let lastDetail = '';
-  for (const req of requests) {
-    try {
-      const tr = await fetch(req.url, {
-        method: 'POST',
-        headers: {'content-type':'application/x-www-form-urlencoded'},
-        body: new URLSearchParams(req.body)
-      });
-      const txt = await tr.text();
-      let tj = null; try { tj = JSON.parse(txt); } catch {}
-      if (tr.ok && tj) addToken(req.label, tj);
-      else lastDetail = (tj && (tj.error_description || tj.error)) || txt || lastDetail;
-    } catch (e) {
-      lastDetail = e.message || String(e);
-    }
-  }
-  if (!candidates.length) throw new Error('OAuth2 IMAP refresh không trả access_token' + (lastDetail ? ': ' + String(lastDetail).slice(0,220) : ''));
-  return candidates;
+  const detail = (tj && (tj.error_description || tj.error)) || txt || `HTTP ${tr.status}`;
+  throw new Error('OAuth2 IMAP primary refresh lỗi: ' + String(detail).slice(0,220));
 }
 
 async function readTikTokCodeByImapAccessToken(email, accessToken){
@@ -1121,19 +1027,13 @@ async function readTikTokCodeByImapAccessToken(email, accessToken){
 
 async function getMicrosoftTikTokCodeImap(email, refreshToken, clientId){
   if (!ImapFlow || !simpleParser) throw new Error('Thiếu thư viện imapflow/mailparser. Hãy chạy npm install sau khi cập nhật package.json.');
-  hotmailDebug('START_IMAP', { email, clientId });
   const candidates = await getMicrosoftImapAccessTokenCandidates(refreshToken, clientId);
-  hotmailDebug('IMAP_CANDIDATES', { email, count: candidates.length, labels: candidates.map(c => c.label).slice(0, 20) });
   const errors = [];
   for (const c of candidates) {
-    hotmailDebug('TRY_IMAP', { email, label: c.label });
-    const started = Date.now();
     try {
       const code = await readTikTokCodeByImapAccessToken(email, c.accessToken);
-      hotmailDebug(code ? 'SUCCESS_IMAP' : 'NO_CODE_IMAP', { email, label: c.label, ms: Date.now() - started });
       if (code) return code;
     } catch (e) {
-      hotmailDebug('FAIL_IMAP', { email, label: c.label, ms: Date.now() - started, error: e.message || String(e) });
       errors.push(`${c.label}: ${e.message || e}`);
       continue;
     }
@@ -1144,44 +1044,25 @@ async function getMicrosoftTikTokCodeImap(email, refreshToken, clientId){
 
 async function getMicrosoftTikTokCode(email, refreshToken, clientId){
   if (!email || !refreshToken || !clientId) throw new Error('thiếu email/token/clientId');
-  // Với token M.Cxxx, thử nhiều đường đọc mail:
-  // 1) IMAP OAuth2, 2) Outlook REST legacy, 3) Graph Mail.Read.
-  hotmailDebug('START_HOTMAIL_GET_CODE', { email, clientId });
+  // v71 tối ưu tốc độ theo debug log:
+  // 1) IMAP primary: consumers + outlook.office.com/IMAP.AccessAsUser.All offline_access
+  // 2) Nếu IMAP fail: Outlook REST primary endpoint /me/messages
+  // Bỏ Graph và các scope/endpoint phụ khỏi luồng chính để tránh chậm.
   let imapErr = '';
-  let restErr = '';
   try {
     const code = await getMicrosoftTikTokCodeImap(email, refreshToken, clientId);
-    if (code) {
-      hotmailDebug('DONE_HOTMAIL_GET_CODE', { email, method: 'IMAP' });
-      return code;
-    }
+    if (code) return code;
   } catch (e) {
     imapErr = e.message || String(e);
-    hotmailDebug('PATH_IMAP_ERROR', { email, error: imapErr });
   }
   try {
     const code = await getMicrosoftTikTokCodeOutlookRest(email, refreshToken, clientId);
-    if (code) {
-      hotmailDebug('DONE_HOTMAIL_GET_CODE', { email, method: 'OUTLOOK_REST' });
-      return code;
-    }
-  } catch (e) {
-    restErr = e.message || String(e);
-    hotmailDebug('PATH_OUTLOOK_REST_ERROR', { email, error: restErr });
-  }
-  try {
-    const code = await getMicrosoftTikTokCodeGraph(email, refreshToken, clientId);
-    if (code) {
-      hotmailDebug('DONE_HOTMAIL_GET_CODE', { email, method: 'GRAPH' });
-      return code;
-    }
-    if (imapErr || restErr) throw new Error('Không thấy mail TikTok mới. IMAP: ' + imapErr + ' | Outlook REST: ' + restErr);
-    hotmailDebug('DONE_HOTMAIL_GET_CODE', { email, method: 'NONE_NO_CODE' });
+    if (code) return code;
+    if (imapErr) throw new Error('Không thấy mail TikTok mới. IMAP primary: ' + imapErr);
     return '';
   } catch (e) {
-    const details = [imapErr && ('IMAP: ' + imapErr), restErr && ('Outlook REST: ' + restErr), 'Graph: ' + (e.message || e)].filter(Boolean).join(' | ');
-    hotmailDebug('FAIL_HOTMAIL_GET_CODE', { email, error: details });
-    throw new Error(details);
+    const restErr = e.message || String(e);
+    throw new Error([imapErr && ('IMAP primary: ' + imapErr), 'Outlook REST primary: ' + restErr].filter(Boolean).join(' | '));
   }
 }
 

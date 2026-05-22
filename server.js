@@ -2172,24 +2172,42 @@ app.get('/thue-otp-sim', async (req,res)=>{
   const { s, balance, services, countries, prices, networks, grizzlyBalance, codeSimBalance, grizzlyServices, grizzlyCountries, grizzlyPrices, codeSimServices, codeSimNetworks } = ctx;
   const clientId = getClientId(req, res);
   const active = getClientActive(s, clientId);
-  const showConfig = req.query.config === '1' || (!s.apiKey && !s.codeSimApiKey);
+  const showConfig = req.query.config === '1';
+  const showApiForm = req.query.api === '1' || (!s.apiKey && !s.codeSimApiKey);
   const currentService = s.provider === 'codesim' ? serviceName(s.codeSimServiceId, codeSimServices) : serviceName(s.service, grizzlyServices);
   const currentTarget = s.provider === 'codesim'
     ? networkName(s.codeSimNetworkId || '', codeSimNetworks) + (s.codeSimPhone ? ' • đầu ' + s.codeSimPhone : '')
     : countryLabel(s.country, countryName(s.country, grizzlyCountries), grizzlyPrices);
   const activeHtml = active.length ? `<div class="list">${active.map(a=>{ const localNum = localPhoneNumber(a.number, a.country); const metaServices = String(a.provider || '') === 'codesim' ? codeSimServices : grizzlyServices; const metaNetworks = String(a.provider || '') === 'codesim' ? codeSimNetworks : networks; return `<div class="list-item sim-session"><div class="sim-main"><div class="sim-phone-row"><div><b>${esc(a.number)}</b><small class="muted">Số local: ${esc(localNum)}</small></div><div class="sim-inline-actions"><button class="mini-copy" type="button" data-copy="${esc(localNum)}">📋 Số</button><a class="btn danger smallbtn" href="/sim/cancel/${urlEnc(a.id)}">Hủy</a></div></div><small class="muted">ID: ${esc(a.id)} • ${activeSimMeta(a, metaServices, grizzlyCountries, grizzlyPrices, metaNetworks)}</small><div class="otpbox sim-otpbox"><div class="sim-otp-line"><small>OTP SMS</small><b class="sim-code" data-id="${esc(a.id)}">------</b></div><button type="button" data-check-sim-id="${esc(a.id)}" title="Kiểm tra OTP">🔄</button><button type="button" data-copy-sim-id="${esc(a.id)}" title="Copy OTP">📋</button><span class="sim-status" data-id="${esc(a.id)}">Chưa có OTP</span></div></div></div>`; }).join('')}</div>` : '<div class="empty">Chưa có phiên thuê số nào.</div>';
 
-  const apiConfig = `<div class="notice"><b>Bước 1:</b> Nhập API 1 lần cho cả 2 nhà cung cấp rồi bấm lưu. Sau đó chỉ cần chọn nhà cung cấp/dịch vụ để thuê số.</div><label>API key GrizzlySMS</label><input name="apiKey" value="${esc(s.apiKey)}" placeholder="Nhập API key GrizzlySMS"><small class="muted">Số dư GrizzlySMS: ${esc(grizzlyBalance)}</small><label>API key CodeSim</label><input name="codeSimApiKey" value="${esc(s.codeSimApiKey)}" placeholder="Nhập API key CodeSim"><small class="muted">Số dư CodeSim: ${esc(codeSimBalance)}</small>`;
-  const grizzlyConfig = `<div class="notice"><b>GrizzlySMS</b></div><label>Dịch vụ GrizzlySMS</label>${simSelect('service', s.service, grizzlyServices)}<label>Quốc gia GrizzlySMS</label><input id="countrySearch" class="country-search" type="search" placeholder="Tìm quốc gia hoặc mã vùng, ví dụ: 84, 57, Vietnam, Colombia">${simSelect('country', s.country, grizzlyCountries, grizzlyPrices)}`;
-  const codeSimConfig = `<div class="notice"><b>CodeSim</b></div><label>Dịch vụ CodeSim</label>${simpleSelect('codeSimServiceId', s.codeSimServiceId, codeSimServices)}<label>Nhà mạng CodeSim</label>${simpleSelect('codeSimNetworkId', s.codeSimNetworkId || '', codeSimNetworks)}<label>Đầu số tùy chọn</label><input name="codeSimPhone" value="${esc(s.codeSimPhone)}" placeholder="Ví dụ: 098, bỏ trống nếu không cần">`;
-  const providerBlock = `<label>Nhà cung cấp dùng để thuê số</label>${providerSelect(s.provider)}`;
+  const apiStatus = `<div class="sim-config-summary"><div class="field"><label>API đã lưu</label><div class="stat">GrizzlySMS: ${s.apiKey ? 'Đã lưu' : 'Chưa nhập'}<br><small>${esc(grizzlyBalance)}</small><br>CodeSim: ${s.codeSimApiKey ? 'Đã lưu' : 'Chưa nhập'}<br><small>${esc(codeSimBalance)}</small></div></div></div>`;
+  const apiForm = showApiForm
+    ? `<form method="post" action="/thue-otp-sim/api-key"><div class="notice"><b>Nhập API key</b><br>Chọn đúng loại API rồi bấm lưu. Có thể nhập GrizzlySMS trước, sau đó nhập CodeSim sau.</div>${apiStatus}<label>Loại API</label><div class="radio-row"><label><input type="radio" name="apiProvider" value="grizzly" ${s.provider !== 'codesim' ? 'checked' : ''}> GrizzlySMS</label><label><input type="radio" name="apiProvider" value="codesim" ${s.provider === 'codesim' ? 'checked' : ''}> CodeSim</label></div><label>API key</label><input name="simApiKey" value="" placeholder="Dán API key vào đây"><button class="btn primary wide">💾 Lưu API key</button><a class="btn soft wide" href="/thue-otp-sim">Đóng</a></form>`
+    : `<a class="btn soft wide" href="/thue-otp-sim?api=1">🔑 Nhập API key</a>`;
+  const grizzlyConfig = `<div class="provider-config" data-provider-config="grizzly"><div class="notice"><b>GrizzlySMS</b></div><label>Dịch vụ GrizzlySMS</label>${simSelect('service', s.service, grizzlyServices)}<label>Quốc gia GrizzlySMS</label><input id="countrySearch" class="country-search" type="search" placeholder="Tìm quốc gia hoặc mã vùng, ví dụ: 84, 57, Vietnam, Colombia">${simSelect('country', s.country, grizzlyCountries, grizzlyPrices)}</div>`;
+  const codeSimConfig = `<div class="provider-config" data-provider-config="codesim"><div class="notice"><b>CodeSim</b></div><label>Dịch vụ CodeSim</label>${simpleSelect('codeSimServiceId', s.codeSimServiceId, codeSimServices)}<label>Nhà mạng CodeSim</label>${simpleSelect('codeSimNetworkId', s.codeSimNetworkId || '', codeSimNetworks)}<label>Đầu số tùy chọn</label><input name="codeSimPhone" value="${esc(s.codeSimPhone)}" placeholder="Ví dụ: 098, bỏ trống nếu không cần"></div>`;
+  const providerBlock = `<label>Chọn bên cho thuê số</label><select name="provider" id="simProviderSelect"><option value="grizzly" ${s.provider==='grizzly'?'selected':''}>GrizzlySMS</option><option value="codesim" ${s.provider==='codesim'?'selected':''}>CodeSim</option></select>`;
+  const providerToggleScript = `<script>(function(){function t(){var v=(document.getElementById('simProviderSelect')||{}).value||'grizzly';document.querySelectorAll('[data-provider-config]').forEach(function(el){el.style.display=el.getAttribute('data-provider-config')===v?'block':'none';});}var s=document.getElementById('simProviderSelect');if(s){s.addEventListener('change',t);t();}})();</script>`;
   const configForm = showConfig
-    ? `<form method="post" action="/thue-otp-sim/settings">${apiConfig}${providerBlock}${grizzlyConfig}${codeSimConfig}<button class="btn primary wide">💾 Lưu API & cấu hình thuê số</button><a class="btn soft wide" href="/thue-otp-sim">Ẩn cấu hình</a></form>`
-    : `<div class="sim-config-summary"><div class="field"><label>Cấu hình hiện tại</label><div class="stat">${esc(providerLabel(s.provider))} • ${esc(currentService)}<br><small>${esc(currentTarget)}</small></div></div><a class="btn soft wide" href="/thue-otp-sim?config=1">⚙️ Cấu hình API / dịch vụ</a></div>`;
+    ? `<form method="post" action="/thue-otp-sim/settings"><div class="notice"><b>Cấu hình thuê số</b><br>Chọn GrizzlySMS hoặc CodeSim, sau đó chọn dịch vụ/quốc gia/nhà mạng theo bên cho thuê.</div>${providerBlock}${grizzlyConfig}${codeSimConfig}<button class="btn primary wide">💾 Lưu cấu hình thuê số</button><a class="btn soft wide" href="/thue-otp-sim">Ẩn cấu hình</a></form>${providerToggleScript}`
+    : `<div class="sim-config-summary"><div class="field"><label>Cấu hình hiện tại</label><div class="stat">${esc(providerLabel(s.provider))} • ${esc(currentService)}<br><small>${esc(currentTarget)}</small></div></div><a class="btn soft wide" href="/thue-otp-sim?config=1">⚙️ Cấu hình thuê số</a></div>`;
   const body = card(`💰 Số dư ${esc(providerLabel(s.provider))}`, `<div class="big-result">${esc(balance)}</div>`)+
     card('⏳ Phiên đang chờ SMS', activeHtml)+
+    card('🔑 API thuê số', `${apiForm}`)+
     card('📱 Thuê OTP SIM', `<form id="simGetForm" method="post" action="/sim/get-number"><button id="simGetBtn" class="btn primary wide">📲 Lấy số điện thoại</button><div id="simGetLoading" class="notice" style="display:none">⏳ Đang lấy số điện thoại...</div></form>${configForm}`);
   res.send(layout('Thuê OTP SIM', body, 'sim'));
+});
+app.post('/thue-otp-sim/api-key',(req,res)=>{
+  const old = normalizeSimStore(req);
+  const apiProvider = ['grizzly','codesim'].includes(String(req.body.apiProvider || '').trim()) ? String(req.body.apiProvider).trim() : 'grizzly';
+  const key = String(req.body.simApiKey || '').trim();
+  const next = { ...old, provider: apiProvider };
+  if (key) {
+    if (apiProvider === 'codesim') next.codeSimApiKey = key;
+    else next.apiKey = key;
+  }
+  writeDomainSim(req, next);
+  res.redirect('/thue-otp-sim?config=1');
 });
 app.post('/thue-otp-sim/settings',(req,res)=>{
   const old = normalizeSimStore(req);

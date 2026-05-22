@@ -87,3 +87,6 @@ body{font-size:17px;font-weight:650}.hero h1{font-size:38px;font-weight:950}.eye
 .sim-otpbox .sim-status.ok{background:rgba(0,208,132,.18);color:#baffdf}
 .sim-otpbox .sim-status.warn{background:rgba(255,77,109,.18);color:#ffd2dc}
 @media(max-width:560px){.sim-otpbox{grid-template-columns:1fr 46px 46px!important}.sim-otpbox .sim-code{font-size:30px!important}.sim-otpbox .sim-status{font-size:14px}.quick-copy-box .quick-copy-row{grid-template-columns:1fr 54px}.quick-copy-box .quick-copy-row .input-copy{width:54px}}
+.radio-row{display:flex;gap:12px;flex-wrap:wrap;margin:8px 0 12px}
+.radio-row label{display:flex;align-items:center;gap:8px;background:#f5f9ff;border:1px solid #dcecff;border-radius:14px;padding:10px 12px;font-weight:800;color:#23354d}
+.provider-config{margin-top:12px}

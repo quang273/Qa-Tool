@@ -2016,27 +2016,24 @@ async function codesimGetNumber({ apiKey, serviceId, networkId, phone }){
   const attempts = [];
   const makeParams = (extra = {}) => ({ api_key: apiKey, service_id: realServiceId, ...extra });
 
-  // CodeSim chuẩn docs: chỉ bắt buộc api_key + service_id.
-  // Tuyệt đối không dùng dữ liệu mẫu 0388 / {{sim_id}} và không tự nhảy sang service khác như Facebook.
-  // Nếu người dùng chọn nhà mạng/đầu số thì chỉ thử sau lần tối giản để tránh lỗi 500 do network/phone không khớp.
-  const plan = [{ label:'service_only', params: makeParams() }];
+  // CodeSim dễ lỗi 500 nếu truyền network_id/phone không phù hợp, nên luôn thử tối giản trước.
+  const plan = [
+    { label:'service_only', params: makeParams() },
+  ];
   if (networkId) plan.push({ label:'with_network', params: makeParams({ network_id: networkId }) });
   if (phone) plan.push({ label:'with_phone', params: makeParams({ phone }) });
   if (networkId && phone) plan.push({ label:'with_network_phone', params: makeParams({ network_id: networkId, phone }) });
 
   for (const item of plan) {
     const r = await codesim('/sim/get_sim', item.params);
-    const detail = `${item.label} url=${r.url.replace(/api_key=[^&]+/,'api_key=***')} => ${codesimMessage(r)}`;
-    attempts.push(detail);
+    attempts.push(`${item.label} service_id=${realServiceId}${networkId ? ' network_id='+networkId : ''}${phone ? ' phone='+phone : ''} => ${codesimMessage(r)}`);
     if (codesimDataOK(r) && r.json.data && (r.json.data.otpId || r.json.data.idOtp) && r.json.data.phone) {
       const d = r.json.data;
       return {
         ok:true,
         provider:'codesim',
-        // id của phiên trên web = otpId để API /api/sim/status/:id kiểm tra code bằng otp_id.
         id:String(d.otpId || d.idOtp),
         otpId:String(d.otpId || d.idOtp),
-        // simId chỉ dùng để hủy số: /sim/cancel_api_key/{simId}
         simId:String(d.simId || ''),
         number:String(d.phone),
         phone:String(d.phone),
@@ -2052,7 +2049,7 @@ async function codesimGetNumber({ apiKey, serviceId, networkId, phone }){
   return {
     ok:false,
     raw:attempts.join(' | '),
-    message:`CodeSim: Không thuê được số với service_id=${realServiceId}. Web đã gọi đúng docs /sim/get_sim?service_id=${realServiceId}&api_key=***. Nếu service_id=1 thuê được nhưng service_id=${realServiceId} lỗi, nghĩa là lỗi/hết số riêng dịch vụ đã chọn phía CodeSim, không được tự thuê nhầm dịch vụ khác.`
+    message:`CodeSim: Không thuê được số. Đã dùng service_id=${realServiceId} (TikTok trong danh sách CodeSim là id 21). Nếu lỗi 500, service này đang lỗi/hết số phía CodeSim hoặc nhà mạng/đầu số không phù hợp.`
   };
 }
 function parseCodeSimOtp(resp){
@@ -2073,8 +2070,7 @@ function providerLabel(p){ return String(p) === 'codesim' ? 'CodeSim' : 'Grizzly
 function networkName(code, networks){ return (networks.find(x=>String(x[0])===String(code))||[])[1] || (code ? ('Nhà mạng ' + code) : 'Tất cả nhà mạng'); }
 function activeSimMeta(a, services, countries, prices, networks){
   if (String(a.provider || 'grizzly') === 'codesim') {
-    const svcLabel = a.serviceName || serviceName(a.service, services || []);
-    return `${esc(providerLabel('codesim'))} • ${esc(svcLabel)} • ${esc(networkName(a.networkId || '', networks || []))}`;
+    return `${esc(providerLabel('codesim'))} • ${esc(serviceName(a.service, services))} • ${esc(networkName(a.networkId || '', networks || []))}`;
   }
   return `${esc(providerLabel('grizzly'))} • ${esc(serviceName(a.service, services))} • ${esc(countryLabel(a.country, countryName(a.country, countries), prices))}`;
 }
@@ -2098,44 +2094,27 @@ async function simContext(req){
   let countries = FALLBACK_COUNTRIES;
   let prices = {};
   let networks = [['', 'Tất cả nhà mạng']];
-
-  // v87: luôn load/lưu được cả 2 API trước. Người dùng nhập Grizzly + CodeSim một lần,
-  // sau đó chỉ chọn nhà cung cấp/dịch vụ cần thuê.
-  let grizzlyBalance = s.apiKey ? 'Đang kiểm tra...' : 'Chưa nhập API key GrizzlySMS';
-  let codeSimBalance = s.codeSimApiKey ? 'Đang kiểm tra...' : 'Chưa nhập API key CodeSim';
-  let grizzlyServices = FALLBACK_SERVICES;
-  let grizzlyCountries = FALLBACK_COUNTRIES;
-  let grizzlyPrices = {};
-  let codeSimServices = [];
-  let codeSimNetworks = [['', 'Tất cả nhà mạng']];
-
-  if (s.apiKey) {
-    try { grizzlyBalance = parseBalance((await grizzly('getBalance', { api_key:s.apiKey })).text); } catch(e){ grizzlyBalance = 'Lỗi số dư GrizzlySMS: ' + e.message; }
-    try { grizzlyServices = parseOptions(await grizzly('getServices', { api_key:s.apiKey }), FALLBACK_SERVICES); } catch {}
-    try { grizzlyCountries = parseOptions(await grizzly('getCountries', { api_key:s.apiKey }), FALLBACK_COUNTRIES); } catch {}
-    try { grizzlyPrices = parsePrices(await grizzly('getPrices', { api_key:s.apiKey, service:s.service }), s.service); } catch {}
-  }
-  grizzlyCountries = grizzlyCountries.filter(([id,label]) => isKnownCountryOption(id,label) || String(id) === String(s.country));
-
-  if (s.codeSimApiKey) {
-    try { codeSimBalance = parseCodeSimBalance(await codesim('/yourself/information-by-api-key', { api_key:s.codeSimApiKey })); } catch(e){ codeSimBalance = 'Lỗi số dư CodeSim: ' + e.message; }
-    try { const got = parseCodeSimServices(await codesim('/service/get_service_by_api_key', { api_key:s.codeSimApiKey })); if (got.length) codeSimServices = got; } catch {}
-    try { codeSimNetworks = parseCodeSimNetworks(await codesim('/network/get-network-by-api-key', { api_key:s.codeSimApiKey })); } catch {}
-    if (!s.codeSimServiceId && codeSimServices.length) { s.codeSimServiceId = codeSimServices[0][0]; writeDomainSim(req, s); }
-  }
-
   if (s.provider === 'codesim') {
-    balance = codeSimBalance;
-    services = codeSimServices;
-    networks = codeSimNetworks;
+    if (s.codeSimApiKey) {
+      try { balance = parseCodeSimBalance(await codesim('/yourself/information-by-api-key', { api_key:s.codeSimApiKey })); } catch(e){ balance = 'Lỗi số dư CodeSim: ' + e.message; }
+      try { const got = parseCodeSimServices(await codesim('/service/get_service_by_api_key', { api_key:s.codeSimApiKey })); if (got.length) services = got; } catch {}
+      try { networks = parseCodeSimNetworks(await codesim('/network/get-network-by-api-key', { api_key:s.codeSimApiKey })); } catch {}
+      if (!s.codeSimServiceId && services.length) { s.codeSimServiceId = services[0][0]; writeDomainSim(req, s); }
+    } else {
+      services = [];
+    }
   } else {
-    balance = grizzlyBalance;
-    services = grizzlyServices;
-    countries = grizzlyCountries;
-    prices = grizzlyPrices;
+    if (s.apiKey) {
+      try { balance = parseBalance((await grizzly('getBalance', { api_key:s.apiKey })).text); } catch(e){ balance = 'Lỗi số dư: ' + e.message; }
+      try { services = parseOptions(await grizzly('getServices', { api_key:s.apiKey }), FALLBACK_SERVICES); } catch {}
+      try { countries = parseOptions(await grizzly('getCountries', { api_key:s.apiKey }), FALLBACK_COUNTRIES); } catch {}
+      try { prices = parsePrices(await grizzly('getPrices', { api_key:s.apiKey, service:s.service }), s.service); } catch {}
+    }
+    // Ẩn mặc định các mã quốc gia API trả về nhưng chưa có tên/mã vùng để danh sách không bị rối.
+    // Vẫn giữ quốc gia đang chọn nếu nó là mã lạ, tránh làm mất cấu hình cũ.
+    countries = countries.filter(([id,label]) => isKnownCountryOption(id,label) || String(id) === String(s.country));
   }
-
-  return { s, balance, services, countries, prices, networks, grizzlyBalance, codeSimBalance, grizzlyServices, grizzlyCountries, grizzlyPrices, codeSimServices, codeSimNetworks };
+  return { s, balance, services, countries, prices, networks };
 }
 function countrySearchText(id, label, prices){
   const meta = COUNTRY_META[String(id)] || {};
@@ -2168,24 +2147,20 @@ function simpleSelect(name, value, options){
 
 
 app.get('/thue-otp-sim', async (req,res)=>{
-  const ctx = await simContext(req);
-  const { s, balance, services, countries, prices, networks, grizzlyBalance, codeSimBalance, grizzlyServices, grizzlyCountries, grizzlyPrices, codeSimServices, codeSimNetworks } = ctx;
+  const { s, balance, services, countries, prices, networks } = await simContext(req);
   const clientId = getClientId(req, res);
   const active = getClientActive(s, clientId);
-  const showConfig = req.query.config === '1' || (!s.apiKey && !s.codeSimApiKey);
-  const currentService = s.provider === 'codesim' ? serviceName(s.codeSimServiceId, codeSimServices) : serviceName(s.service, grizzlyServices);
+  const showConfig = req.query.config === '1' || (s.provider === 'codesim' ? !s.codeSimApiKey : !s.apiKey);
+  const currentService = s.provider === 'codesim' ? serviceName(s.codeSimServiceId, services) : serviceName(s.service, services);
   const currentTarget = s.provider === 'codesim'
-    ? networkName(s.codeSimNetworkId || '', codeSimNetworks) + (s.codeSimPhone ? ' • đầu ' + s.codeSimPhone : '')
-    : countryLabel(s.country, countryName(s.country, grizzlyCountries), grizzlyPrices);
-  const activeHtml = active.length ? `<div class="list">${active.map(a=>{ const localNum = localPhoneNumber(a.number, a.country); const metaServices = String(a.provider || '') === 'codesim' ? codeSimServices : grizzlyServices; const metaNetworks = String(a.provider || '') === 'codesim' ? codeSimNetworks : networks; return `<div class="list-item sim-session"><div class="sim-main"><div class="sim-phone-row"><div><b>${esc(a.number)}</b><small class="muted">Số local: ${esc(localNum)}</small></div><div class="sim-inline-actions"><button class="mini-copy" type="button" data-copy="${esc(localNum)}">📋 Số</button><a class="btn danger smallbtn" href="/sim/cancel/${urlEnc(a.id)}">Hủy</a></div></div><small class="muted">ID: ${esc(a.id)} • ${activeSimMeta(a, metaServices, grizzlyCountries, grizzlyPrices, metaNetworks)}</small><div class="otpbox sim-otpbox"><div class="sim-otp-line"><small>OTP SMS</small><b class="sim-code" data-id="${esc(a.id)}">------</b></div><button type="button" data-check-sim-id="${esc(a.id)}" title="Kiểm tra OTP">🔄</button><button type="button" data-copy-sim-id="${esc(a.id)}" title="Copy OTP">📋</button><span class="sim-status" data-id="${esc(a.id)}">Chưa có OTP</span></div></div></div>`; }).join('')}</div>` : '<div class="empty">Chưa có phiên thuê số nào.</div>';
-
-  const apiConfig = `<div class="notice"><b>Bước 1:</b> Nhập API 1 lần cho cả 2 nhà cung cấp rồi bấm lưu. Sau đó chỉ cần chọn nhà cung cấp/dịch vụ để thuê số.</div><label>API key GrizzlySMS</label><input name="apiKey" value="${esc(s.apiKey)}" placeholder="Nhập API key GrizzlySMS"><small class="muted">Số dư GrizzlySMS: ${esc(grizzlyBalance)}</small><label>API key CodeSim</label><input name="codeSimApiKey" value="${esc(s.codeSimApiKey)}" placeholder="Nhập API key CodeSim"><small class="muted">Số dư CodeSim: ${esc(codeSimBalance)}</small>`;
-  const grizzlyConfig = `<div class="notice"><b>GrizzlySMS</b></div><label>Dịch vụ GrizzlySMS</label>${simSelect('service', s.service, grizzlyServices)}<label>Quốc gia GrizzlySMS</label><input id="countrySearch" class="country-search" type="search" placeholder="Tìm quốc gia hoặc mã vùng, ví dụ: 84, 57, Vietnam, Colombia">${simSelect('country', s.country, grizzlyCountries, grizzlyPrices)}`;
-  const codeSimConfig = `<div class="notice"><b>CodeSim</b></div><label>Dịch vụ CodeSim</label>${simpleSelect('codeSimServiceId', s.codeSimServiceId, codeSimServices)}<label>Nhà mạng CodeSim</label>${simpleSelect('codeSimNetworkId', s.codeSimNetworkId || '', codeSimNetworks)}<label>Đầu số tùy chọn</label><input name="codeSimPhone" value="${esc(s.codeSimPhone)}" placeholder="Ví dụ: 098, bỏ trống nếu không cần">`;
-  const providerBlock = `<label>Nhà cung cấp dùng để thuê số</label>${providerSelect(s.provider)}`;
+    ? networkName(s.codeSimNetworkId || '', networks) + (s.codeSimPhone ? ' • đầu ' + s.codeSimPhone : '')
+    : countryLabel(s.country, countryName(s.country, countries), prices);
+  const activeHtml = active.length ? `<div class="list">${active.map(a=>{ const localNum = localPhoneNumber(a.number, a.country); return `<div class="list-item sim-session"><div class="sim-main"><div class="sim-phone-row"><div><b>${esc(a.number)}</b><small class="muted">Số local: ${esc(localNum)}</small></div><div class="sim-inline-actions"><button class="mini-copy" type="button" data-copy="${esc(localNum)}">📋 Số</button><a class="btn danger smallbtn" href="/sim/cancel/${urlEnc(a.id)}">Hủy</a></div></div><small class="muted">ID: ${esc(a.id)} • ${activeSimMeta(a, services, countries, prices, networks)}</small><div class="otpbox sim-otpbox"><div class="sim-otp-line"><small>OTP SMS</small><b class="sim-code" data-id="${esc(a.id)}">------</b></div><button type="button" data-check-sim-id="${esc(a.id)}" title="Kiểm tra OTP">🔄</button><button type="button" data-copy-sim-id="${esc(a.id)}" title="Copy OTP">📋</button><span class="sim-status" data-id="${esc(a.id)}">Chưa có OTP</span></div></div></div>`; }).join('')}</div>` : '<div class="empty">Chưa có phiên thuê số nào.</div>';
+  const grizzlyConfig = `<label>API key GrizzlySMS</label><input name="apiKey" value="${esc(s.apiKey)}" placeholder="Nhập API key GrizzlySMS"><label>Dịch vụ GrizzlySMS</label>${simSelect('service', s.service, services)}<label>Quốc gia GrizzlySMS</label><input id="countrySearch" class="country-search" type="search" placeholder="Tìm quốc gia hoặc mã vùng, ví dụ: 84, 57, Vietnam, Colombia">${simSelect('country', s.country, countries, prices)}`;
+  const codeSimConfig = `<label>API key CodeSim</label><input name="codeSimApiKey" value="${esc(s.codeSimApiKey)}" placeholder="Nhập API key CodeSim"><label>Dịch vụ CodeSim</label>${simpleSelect('codeSimServiceId', s.codeSimServiceId, services)}<label>Nhà mạng CodeSim</label>${simpleSelect('codeSimNetworkId', s.codeSimNetworkId || '', networks)}<label>Đầu số tùy chọn</label><input name="codeSimPhone" value="${esc(s.codeSimPhone)}" placeholder="Ví dụ: 098, bỏ trống nếu không cần">`;
   const configForm = showConfig
-    ? `<form method="post" action="/thue-otp-sim/settings">${apiConfig}${providerBlock}${grizzlyConfig}${codeSimConfig}<button class="btn primary wide">💾 Lưu API & cấu hình thuê số</button><a class="btn soft wide" href="/thue-otp-sim">Ẩn cấu hình</a></form>`
-    : `<div class="sim-config-summary"><div class="field"><label>Cấu hình hiện tại</label><div class="stat">${esc(providerLabel(s.provider))} • ${esc(currentService)}<br><small>${esc(currentTarget)}</small></div></div><a class="btn soft wide" href="/thue-otp-sim?config=1">⚙️ Cấu hình API / dịch vụ</a></div>`;
+    ? `<form method="post" action="/thue-otp-sim/settings"><label>Nhà cung cấp thuê số</label>${providerSelect(s.provider)}${s.provider === 'codesim' ? codeSimConfig : grizzlyConfig}<button class="btn primary wide">💾 Lưu cấu hình</button><a class="btn soft wide" href="/thue-otp-sim">Ẩn cấu hình</a></form>`
+    : `<div class="sim-config-summary"><div class="field"><label>Cấu hình hiện tại</label><div class="stat">${esc(providerLabel(s.provider))} • ${esc(currentService)}<br><small>${esc(currentTarget)}</small></div></div><a class="btn soft wide" href="/thue-otp-sim?config=1">⚙️ Cấu hình</a></div>`;
   const body = card(`💰 Số dư ${esc(providerLabel(s.provider))}`, `<div class="big-result">${esc(balance)}</div>`)+
     card('⏳ Phiên đang chờ SMS', activeHtml)+
     card('📱 Thuê OTP SIM', `<form id="simGetForm" method="post" action="/sim/get-number"><button id="simGetBtn" class="btn primary wide">📲 Lấy số điện thoại</button><div id="simGetLoading" class="notice" style="display:none">⏳ Đang lấy số điện thoại...</div></form>${configForm}`);
@@ -2242,7 +2217,7 @@ app.get('/api/sim/status/:id', async (req,res)=>{
   if (sess && String(sess.provider || '') === 'codesim') {
     if(!s.codeSimApiKey) return res.json({status:false,message:'Chưa nhập API key CodeSim'});
     try{
-      const r = await codesim('/otp/get_otp_by_phone_api_key', { api_key:s.codeSimApiKey, otp_id:sess.otpId || req.params.id });
+      const r = await codesim('/otp/get_otp_by_phone_api_key', { api_key:s.codeSimApiKey, otp_id:req.params.id });
       const st = parseCodeSimOtp(r);
       return res.json({status:true, checkedAt:new Date().toLocaleTimeString('vi-VN'), ...st});
     }catch(e){ return res.json({status:false,message:e.message}); }

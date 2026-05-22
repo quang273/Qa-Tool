@@ -1478,6 +1478,12 @@ app.get('/api/otp',(req,res)=>{ const now=Date.now(); res.setHeader('Cache-Contr
 
 
 const GRIZZLY_API = 'https://api.grizzlysms.com/stubs/handler_api.php';
+// v82: Grizzly đôi lúc trả BAD_ACTION dù getBalance vẫn chạy. Gọi đúng thứ tự tham số theo docs
+// api_key -> action -> service -> country, và nếu endpoint api.* trả BAD_ACTION thì thử endpoint gốc.
+const GRIZZLY_API_FALLBACKS = [
+  'https://api.grizzlysms.com/stubs/handler_api.php',
+  'https://grizzlysms.com/stubs/handler_api.php'
+];
 const FALLBACK_SERVICES = [
   ['lf','TikTok'], ['tk','TikTok / Alt'], ['tg','Telegram'], ['wa','WhatsApp'], ['ig','Instagram'], ['fb','Facebook'], ['go','Google'], ['ot','Other']
 ];
@@ -1701,10 +1707,38 @@ function normalizeSimStore(req){
   return s;
 }
 async function grizzly(action, params = {}){
-  const qs = new URLSearchParams({ action, ...params });
-  const r = await fetch(`${GRIZZLY_API}?${qs.toString()}`, { headers:{ 'user-agent':'QuangFunLocal/1.0' } });
-  const text = await r.text();
-  try { return { text, json: JSON.parse(text) }; } catch { return { text, json: null }; }
+  // Tạo query theo đúng thứ tự tài liệu GrizzlySMS:
+  // api_key=$api_key&action=$action&service=$service&country=$country...
+  const qs = new URLSearchParams();
+  if (params.api_key !== undefined && params.api_key !== null && String(params.api_key) !== '') qs.set('api_key', String(params.api_key));
+  qs.set('action', String(action || '').trim());
+  for (const [k, v] of Object.entries(params || {})) {
+    if (k === 'api_key' || k === 'action') continue;
+    if (v === undefined || v === null || String(v) === '') continue;
+    qs.set(k, String(v).trim());
+  }
+
+  let last = null;
+  for (const endpoint of GRIZZLY_API_FALLBACKS) {
+    const url = `${endpoint}?${qs.toString()}`;
+    const r = await fetch(url, {
+      headers: {
+        'accept': 'text/plain, application/json;q=0.9, */*;q=0.8',
+        'user-agent': 'Mozilla/5.0 QuangFun/1.0'
+      }
+    });
+    const text = (await r.text()).trim();
+    let json = null;
+    try { json = JSON.parse(text); } catch {}
+    last = { text, json, endpoint, url };
+
+    // Nếu endpoint api.* trả BAD_ACTION, thử endpoint gốc một lần nữa.
+    // Các lỗi khác như NO_NUMBERS, BAD_KEY, NO_BALANCE là kết quả thật, không đổi endpoint.
+    if (!/^BAD_ACTION$/i.test(text) || endpoint === GRIZZLY_API_FALLBACKS[GRIZZLY_API_FALLBACKS.length - 1]) {
+      return last;
+    }
+  }
+  return last || { text:'', json:null, endpoint:'', url:'' };
 }
 function parseOptions(raw, fallback){
   const j = raw && raw.json;
@@ -1845,7 +1879,8 @@ function looksNoNumbers(x){
   return /NO_NUMBERS/i.test(String((x && (x.raw || x.message)) || x || ''));
 }
 function simAttemptLabel(a){
-  return `${a.action} service=${a.service} country=${a.country} => ${String((a.parsed && (a.parsed.raw || a.parsed.message)) || a.raw || '').trim()}`;
+  const ep = a && a.endpoint ? (' endpoint=' + String(a.endpoint).replace(/^https?:\/\//,'').replace(/\/stubs\/handler_api\.php$/,'')) : '';
+  return `${a.action} service=${a.service} country=${a.country}${ep} => ${String((a.parsed && (a.parsed.raw || a.parsed.message)) || a.raw || '').trim()}`;
 }
 async function grizzlyGetNumberOnce({ apiKey, service, country }){
   const params = { api_key: apiKey, service, country };
@@ -1855,7 +1890,7 @@ async function grizzlyGetNumberOnce({ apiKey, service, country }){
   // Không thử getNumberV2 trong luồng chính nữa để tránh BAD_ACTION chập chờn.
   const r1 = await grizzly('getNumber', params);
   const parsed1 = parseNumberResponse(r1.text, r1.json);
-  attempts.push({ action:'getNumber', service, country, parsed:parsed1, raw:r1.text });
+  attempts.push({ action:'getNumber', service, country, endpoint:r1.endpoint, parsed:parsed1, raw:r1.text });
   if (parsed1.ok) return { ...parsed1, serviceUsed: service, countryUsed: country, action:'getNumber', attempts };
 
   return { ok:false, serviceUsed:service, countryUsed:country, attempts, parsed1,
@@ -1890,7 +1925,7 @@ async function grizzlyGetNumber({ apiKey, service, country }){
   const hasBadAction = /BAD_ACTION/i.test(raw);
   const hasNoNumbers = /NO_NUMBERS/i.test(raw);
   const message = hasBadAction
-    ? `BAD_ACTION: Endpoint GrizzlySMS không nhận action=getNumber tại thời điểm này. Đã gọi đúng tài liệu: handler_api.php?action=getNumber&service=${service}&country=${country}. Nếu vừa thuê được rồi lại lỗi, hãy thử lại sau vài giây hoặc kiểm tra trạng thái API GrizzlySMS.`
+    ? `BAD_ACTION: GrizzlySMS chưa nhận lệnh thuê số. Bản v82 đã gọi đúng thứ tự docs api_key&action=getNumber&service=${service}&country=${country} và thử cả api.grizzlysms.com + grizzlysms.com. Nếu vẫn lỗi, hãy đổi service tk/lf hoặc thử quốc gia khác; xem dòng chi tiết bên dưới để biết endpoint nào trả lỗi.`
     : hasNoNumbers
       ? `NO_NUMBERS: Quốc gia/dịch vụ này đang hết số hoặc mã dịch vụ chưa đúng. Đã thử service ${tried}. Hãy đổi quốc gia hoặc đổi giữa TikTok mã lf / TikTok Alt mã tk.`
       : (firstResult && firstResult.message) || 'Không thuê được số.';

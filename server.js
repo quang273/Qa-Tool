@@ -2193,8 +2193,8 @@ app.get('/thue-otp-sim', async (req,res)=>{
     : `<div class="sim-config-summary"><div class="field"><label>Cấu hình hiện tại</label><div class="stat">${esc(providerLabel(s.provider))} • ${esc(currentService)}<br><small>${esc(currentTarget)}</small></div></div><a class="btn soft wide" href="/thue-otp-sim?config=1">⚙️ Cấu hình thuê số</a></div>`;
   const body = card(`💰 Số dư ${esc(providerLabel(s.provider))}`, `<div class="big-result">${esc(balance)}</div>`)+
     card('⏳ Phiên đang chờ SMS', activeHtml)+
-    card('🔑 API thuê số', `${apiForm}`)+
-    card('📱 Thuê OTP SIM', `<form id="simGetForm" method="post" action="/sim/get-number"><button id="simGetBtn" class="btn primary wide">📲 Lấy số điện thoại</button><div id="simGetLoading" class="notice" style="display:none">⏳ Đang lấy số điện thoại...</div></form>${configForm}`);
+    card('📱 Thuê OTP SIM', `<form id="simGetForm" method="post" action="/sim/get-number"><button id="simGetBtn" class="btn primary wide">📲 Lấy số điện thoại</button><div id="simGetLoading" class="notice" style="display:none">⏳ Đang lấy số điện thoại...</div></form>${configForm}`)+
+    card('🔑 API thuê số', `${apiForm}`);
   res.send(layout('Thuê OTP SIM', body, 'sim'));
 });
 app.post('/thue-otp-sim/api-key',(req,res)=>{

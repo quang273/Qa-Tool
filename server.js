@@ -1793,11 +1793,61 @@ function localPhoneNumber(number, country){
   if (dial && digits.startsWith(dial)) digits = digits.slice(dial.length);
   return digits || n;
 }
-function parseNumberResponse(t){
-  const s = String(t || '').trim();
-  const m = s.match(/ACCESS_NUMBER:([^:]+):(.+)/i);
-  if (m) return { ok:true, id:m[1], number:m[2], raw:s };
-  return { ok:false, raw:s };
+function parseNumberResponse(raw, json){
+  const text = String(raw || '').trim();
+
+  // GrizzlySMS getNumberV2 returns JSON:
+  // { activationId, phoneNumber, activationCost, currency, countryCode, ... }
+  const data = json && typeof json === 'object' ? json : (() => {
+    try { return JSON.parse(text); } catch { return null; }
+  })();
+
+  if (data && (data.activationId || data.id) && (data.phoneNumber || data.number || data.phone)) {
+    const id = String(data.activationId || data.id);
+    const number = String(data.phoneNumber || data.number || data.phone);
+    return {
+      ok: true,
+      id,
+      activationId: id,
+      number,
+      phone: number,
+      phoneNumber: number,
+      cost: data.activationCost ?? data.cost ?? '',
+      currency: data.currency ?? '',
+      countryCode: data.countryCode ?? '',
+      raw: data
+    };
+  }
+
+  // Keep old handler_api format as fallback, in case provider returns legacy text.
+  const m = text.match(/ACCESS_NUMBER:([^:]+):(.+)/i);
+  if (m) return { ok:true, id:m[1], activationId:m[1], number:m[2], phone:m[2], phoneNumber:m[2], raw:text };
+
+  const messageMap = {
+    BAD_ACTION: 'BAD_ACTION: Lệnh thuê số sai. Đã chuyển sang getNumberV2, nếu còn lỗi hãy kiểm tra lại endpoint GrizzlySMS.',
+    BAD_SERVICE: 'BAD_SERVICE: Mã dịch vụ sai. Kiểm tra lại dịch vụ trong cấu hình.',
+    BAD_KEY: 'BAD_KEY: API key GrizzlySMS sai.',
+    NO_BALANCE: 'NO_BALANCE: Tài khoản GrizzlySMS không đủ tiền.',
+    NO_NUMBERS: 'NO_NUMBERS: Quốc gia/dịch vụ này đang hết số.',
+    ERROR_SQL: 'ERROR_SQL: Lỗi hệ thống từ GrizzlySMS, thử lại sau.'
+  };
+
+  const upper = text.toUpperCase();
+  for (const [key, message] of Object.entries(messageMap)) {
+    if (upper.includes(key)) return { ok:false, raw:text, message };
+  }
+
+  return { ok:false, raw:text || 'Không thuê được số.', message:text || 'Không thuê được số.' };
+}
+
+async function grizzlyGetNumber({ apiKey, service, country }){
+  // Balance/status still use legacy actions. Only renting number uses getNumberV2.
+  const r = await grizzly('getNumberV2', {
+    api_key: apiKey,
+    service,
+    country
+  });
+  return parseNumberResponse(r.text, r.json);
 }
 function parseSmsStatus(t){
   const s = String(t || '').trim();
@@ -1875,14 +1925,13 @@ app.post('/sim/get-number', async (req,res)=>{
   const clientId = getClientId(req, res);
   if(!s.apiKey) return res.redirect('/thue-otp-sim');
   try{
-    const t=(await grizzly('getNumber',{api_key:s.apiKey, service:s.service, country:s.country})).text;
-    const n=parseNumberResponse(t);
+    const n = await grizzlyGetNumber({ apiKey:s.apiKey, service:s.service, country:s.country });
     if(n.ok){
-      setClientActive(s, clientId, [{id:n.id, number:n.number, service:s.service, country:s.country, clientId, createdAt:new Date().toISOString()}]);
+      setClientActive(s, clientId, [{id:n.id, number:n.number, service:s.service, country:s.country, clientId, createdAt:new Date().toISOString(), cost:n.cost||'', countryCode:n.countryCode||''}]);
       writeDomainSim(req,s);
       return res.redirect('/thue-otp-sim?rented=1');
     }
-    res.send(layout('Không thuê được số', card('⚠️ Kết quả API', `<div class="big-result">${esc(n.raw)}</div>${btn('/thue-otp-sim','Quay lại','soft')}`),'sim'));
+    res.send(layout('Không thuê được số', card('⚠️ Kết quả API', `<div class="big-result">${esc(n.message || n.raw)}</div><small class="muted">${esc(typeof n.raw === 'string' ? n.raw : JSON.stringify(n.raw || ''))}</small>${btn('/thue-otp-sim','Quay lại','soft')}`),'sim'));
   }catch(e){res.send(layout('Lỗi thuê số', card('Lỗi',esc(e.message)),'sim'));}
 });
 app.get('/api/sim/status/:id', async (req,res)=>{

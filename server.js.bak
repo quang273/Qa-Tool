@@ -1851,21 +1851,26 @@ async function grizzlyGetNumberOnce({ apiKey, service, country }){
   const params = { api_key: apiKey, service, country };
   const attempts = [];
 
-  // v81: theo tài liệu GrizzlySMS đang dùng, Request a number chuẩn là action=getNumber.
-  // Không thử getNumberV2 trong luồng chính nữa để tránh BAD_ACTION chập chờn.
+  // Grizzly docs: getNumberV2 works like getNumber but returns JSON with more info.
+  const r2 = await grizzly('getNumberV2', params);
+  const parsed2 = parseNumberResponse(r2.text, r2.json);
+  attempts.push({ action:'getNumberV2', service, country, parsed:parsed2, raw:r2.text });
+  if (parsed2.ok) return { ...parsed2, serviceUsed: service, countryUsed: country, action:'getNumberV2', attempts };
+
+  // Legacy endpoint returns ACCESS_NUMBER:id:number. Keep it because some accounts/endpoints use it better.
   const r1 = await grizzly('getNumber', params);
   const parsed1 = parseNumberResponse(r1.text, r1.json);
   attempts.push({ action:'getNumber', service, country, parsed:parsed1, raw:r1.text });
   if (parsed1.ok) return { ...parsed1, serviceUsed: service, countryUsed: country, action:'getNumber', attempts };
 
-  return { ok:false, serviceUsed:service, countryUsed:country, attempts, parsed1,
+  return { ok:false, serviceUsed:service, countryUsed:country, attempts, parsed2, parsed1,
     raw: attempts.map(simAttemptLabel).join(' | '),
-    message: parsed1.message || parsed1.raw || r1.text || 'Không thuê được số.' };
+    message: `${parsed2.message || parsed2.raw || r2.text || 'V2 lỗi'} | ${parsed1.message || parsed1.raw || r1.text || 'Legacy lỗi'}` };
 }
 function getTikTokServiceFallbacks(service){
   const s = String(service || '').trim().toLowerCase();
-  // TikTok trên Grizzly có thể là tk hoặc lf. Giữ smart fallback service,
-  // nhưng chỉ đổi service khi lỗi NO_NUMBERS, không đổi khi BAD_ACTION/BAD_KEY/NO_BALANCE.
+  // Trên nhiều bảng giá Grizzly/SMS Activate, TikTok có thể là lf hoặc tk.
+  // Nếu người dùng chọn tk mà báo NO_NUMBERS dù còn số, thử lf ngay; ngược lại cũng thử tk.
   if (s === 'tk') return ['tk', 'lf'];
   if (s === 'lf') return ['lf', 'tk'];
   return [s || 'lf'];
@@ -1882,18 +1887,15 @@ async function grizzlyGetNumber({ apiKey, service, country }){
     if (!firstResult) firstResult = r;
 
     // Chỉ tự đổi mã dịch vụ khi lỗi thật sự là hết số/no-number.
+    // Các lỗi key/balance/service bị cấm thì giữ nguyên để báo chính xác.
     if (!looksNoNumbers(r)) break;
   }
 
   const raw = allAttempts.map(simAttemptLabel).join(' | ');
   const tried = [...new Set(allAttempts.map(a=>a.service))].join(' → ');
-  const hasBadAction = /BAD_ACTION/i.test(raw);
-  const hasNoNumbers = /NO_NUMBERS/i.test(raw);
-  const message = hasBadAction
-    ? `BAD_ACTION: Endpoint GrizzlySMS không nhận action=getNumber tại thời điểm này. Đã gọi đúng tài liệu: handler_api.php?action=getNumber&service=${service}&country=${country}. Nếu vừa thuê được rồi lại lỗi, hãy thử lại sau vài giây hoặc kiểm tra trạng thái API GrizzlySMS.`
-    : hasNoNumbers
-      ? `NO_NUMBERS: Quốc gia/dịch vụ này đang hết số hoặc mã dịch vụ chưa đúng. Đã thử service ${tried}. Hãy đổi quốc gia hoặc đổi giữa TikTok mã lf / TikTok Alt mã tk.`
-      : (firstResult && firstResult.message) || 'Không thuê được số.';
+  const message = looksNoNumbers(raw)
+    ? `NO_NUMBERS: Quốc gia/dịch vụ này đang hết số hoặc mã dịch vụ chưa đúng. Đã thử service ${tried}. Hãy đổi quốc gia hoặc đổi giữa TikTok mã lf / TikTok Alt mã tk.`
+    : (firstResult && firstResult.message) || 'Không thuê được số.';
   return { ok:false, raw, message, attempts: allAttempts };
 }
 function parseSmsStatus(t){

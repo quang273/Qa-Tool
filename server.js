@@ -1796,8 +1796,9 @@ function localPhoneNumber(number, country){
 function parseNumberResponse(raw, json){
   const text = String(raw || '').trim();
 
-  // GrizzlySMS getNumberV2 returns JSON:
-  // { activationId, phoneNumber, activationCost, currency, countryCode, ... }
+  // GrizzlySMS legacy Request a number returns text:
+  // ACCESS_NUMBER:activationId:phoneNumber
+  // Some deployments may still return JSON, so keep JSON parsing below.
   const data = json && typeof json === 'object' ? json : (() => {
     try { return JSON.parse(text); } catch { return null; }
   })();
@@ -1824,7 +1825,7 @@ function parseNumberResponse(raw, json){
   if (m) return { ok:true, id:m[1], activationId:m[1], number:m[2], phone:m[2], phoneNumber:m[2], raw:text };
 
   const messageMap = {
-    BAD_ACTION: 'BAD_ACTION: Lệnh thuê số sai. Đã chuyển sang getNumberV2, nếu còn lỗi hãy kiểm tra lại endpoint GrizzlySMS.',
+    BAD_ACTION: 'BAD_ACTION: Action thuê số không được endpoint hiện tại chấp nhận. Web sẽ tự thử getNumberV2 và getNumber.',
     BAD_SERVICE: 'BAD_SERVICE: Mã dịch vụ sai. Kiểm tra lại dịch vụ trong cấu hình.',
     BAD_KEY: 'BAD_KEY: API key GrizzlySMS sai.',
     NO_BALANCE: 'NO_BALANCE: Tài khoản GrizzlySMS không đủ tiền.',
@@ -1841,13 +1842,39 @@ function parseNumberResponse(raw, json){
 }
 
 async function grizzlyGetNumber({ apiKey, service, country }){
-  // Balance/status still use legacy actions. Only renting number uses getNumberV2.
-  const r = await grizzly('getNumberV2', {
+  // GrizzlySMS chuẩn mới: ưu tiên Request a number v2.
+  // V2 trả JSON: { activationId, phoneNumber, activationCost, countryCode, ... }
+  // Nếu endpoint/API account nào chưa hỗ trợ V2 và trả BAD_ACTION, tự fallback về getNumber legacy.
+  const params = {
     api_key: apiKey,
     service,
     country
-  });
-  return parseNumberResponse(r.text, r.json);
+  };
+
+  const attempts = [];
+
+  const r2 = await grizzly('getNumberV2', params);
+  const parsed2 = parseNumberResponse(r2.text, r2.json);
+  attempts.push({ action: 'getNumberV2', parsed: parsed2, raw: r2.text });
+  if (parsed2.ok) return { ...parsed2, action: 'getNumberV2' };
+
+  // Nếu V2 chưa chạy hoặc bị BAD_ACTION, thử lại bằng getNumber chuẩn cũ.
+  const r1 = await grizzly('getNumber', params);
+  const parsed1 = parseNumberResponse(r1.text, r1.json);
+  attempts.push({ action: 'getNumber', parsed: parsed1, raw: r1.text });
+  if (parsed1.ok) return { ...parsed1, action: 'getNumber' };
+
+  // Ưu tiên hiện lỗi thật của getNumber nếu V2 chỉ lỗi BAD_ACTION.
+  if (/BAD_ACTION/i.test(String(parsed2.raw || r2.text || '')) && !/BAD_ACTION/i.test(String(parsed1.raw || r1.text || ''))) {
+    return parsed1;
+  }
+
+  // Nếu cả hai đều lỗi, gom thông tin để dễ biết endpoint/action nào fail.
+  return {
+    ok: false,
+    raw: `getNumberV2=${String(parsed2.raw || r2.text || '').trim()} | getNumber=${String(parsed1.raw || r1.text || '').trim()}`,
+    message: `Không thuê được số. V2: ${parsed2.message || parsed2.raw || r2.text || 'lỗi'} | Legacy: ${parsed1.message || parsed1.raw || r1.text || 'lỗi'}`
+  };
 }
 function parseSmsStatus(t){
   const s = String(t || '').trim();

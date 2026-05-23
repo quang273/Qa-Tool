@@ -1481,9 +1481,23 @@ const GRIZZLY_API = 'https://api.grizzlysms.com/stubs/handler_api.php';
 // v82: Grizzly đôi lúc trả BAD_ACTION dù getBalance vẫn chạy. Gọi đúng thứ tự tham số theo docs
 // api_key -> action -> service -> country, và nếu endpoint api.* trả BAD_ACTION thì thử endpoint gốc.
 const GRIZZLY_API_FALLBACKS = [
-  'https://api.grizzlysms.com/stubs/handler_api.php',
-  'https://grizzlysms.com/stubs/handler_api.php'
+  // Chỉ gọi API chính thức. Không fallback sang https://grizzlysms.com/
+  // vì endpoint web có thể chậm/HTML/Cloudflare làm Render 502.
+  'https://api.grizzlysms.com/stubs/handler_api.php'
 ];
+
+const SIM_FETCH_TIMEOUT_MS = 10000;
+const simRentLocks = new Map();
+async function fetchWithTimeout(url, options = {}, timeoutMs = SIM_FETCH_TIMEOUT_MS){
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const FALLBACK_SERVICES = [
   ['lf','TikTok'], ['tk','TikTok / Alt'], ['tg','Telegram'], ['wa','WhatsApp'], ['ig','Instagram'], ['fb','Facebook'], ['go','Google'], ['ot','Other']
 ];
@@ -1727,7 +1741,7 @@ async function grizzly(action, params = {}){
   let last = null;
   for (const endpoint of GRIZZLY_API_FALLBACKS) {
     const url = `${endpoint}?${qs.toString()}`;
-    const r = await fetch(url, {
+    const r = await fetchWithTimeout(url, {
       headers: {
         'accept': 'text/plain, application/json;q=0.9, */*;q=0.8',
         'user-agent': 'Mozilla/5.0 QuangFun/1.0'
@@ -1894,7 +1908,7 @@ async function grizzlyGetNumberOnce({ apiKey, service, country }){
 
   // v83: Grizzly đôi lúc trả BAD_ACTION theo từng service/endpoint.
   // Thử đúng action docs trước, nếu không được mới thử V2, parse được cả text lẫn JSON.
-  const actions = ['getNumber', 'getNumberV2'];
+  const actions = ['getNumber']; // v90: chỉ dùng getNumber để tránh vòng thử dài gây Render 502
   for (const action of actions) {
     const r = await grizzly(action, params);
     const parsed = parseNumberResponse(r.text, r.json);
@@ -1963,7 +1977,7 @@ async function codesim(pathname, params = {}){
     if (v === undefined || v === null || String(v) === '') continue;
     url.searchParams.set(k, String(v).trim());
   }
-  const r = await fetch(url.toString(), { headers: { 'accept':'application/json, text/plain, */*', 'user-agent':'Mozilla/5.0 QuangFun/1.0' }});
+  const r = await fetchWithTimeout(url.toString(), { headers: { 'accept':'application/json, text/plain, */*', 'user-agent':'Mozilla/5.0 QuangFun/1.0' }});
   const text = (await r.text()).trim();
   let json = null;
   try { json = JSON.parse(text); } catch {}
@@ -2226,31 +2240,62 @@ app.post('/thue-otp-sim/settings',(req,res)=>{
   res.redirect('/thue-otp-sim');
 });
 app.post('/sim/get-number', async (req,res)=>{
-  const s=normalizeSimStore(req);
+  const s = normalizeSimStore(req);
   const clientId = getClientId(req, res);
-  if(s.provider === 'codesim') {
-    if(!s.codeSimApiKey) return res.redirect('/thue-otp-sim?config=1');
-    if(!s.codeSimServiceId) return res.send(layout('Không thuê được số', card('⚠️ Kết quả API', `<div class="big-result">CodeSim: Chưa chọn dịch vụ.</div>${btn('/thue-otp-sim?config=1','Quay lại','soft')}`),'sim'));
-    try{
+  const lockKey = domainKey(req) + ':sim-get-number';
+
+  if (simRentLocks.get(lockKey)) {
+    return res.send(layout('Đang thuê số', card('⏳ Đang xử lý', `<div class="big-result">Đang có yêu cầu thuê số khác chạy. Vui lòng chờ vài giây rồi bấm lại.</div>${btn('/thue-otp-sim','Quay lại','soft')}`),'sim'));
+  }
+
+  simRentLocks.set(lockKey, Date.now());
+  const finishRent = () => simRentLocks.delete(lockKey);
+
+  try {
+    if (s.provider === 'codesim') {
+      if (!s.codeSimApiKey) {
+        finishRent();
+        return res.redirect('/thue-otp-sim?config=1');
+      }
+      if (!s.codeSimServiceId) {
+        finishRent();
+        return res.send(layout('Không thuê được số', card('⚠️ Kết quả API', `<div class="big-result">CodeSim: Chưa chọn dịch vụ.</div>${btn('/thue-otp-sim?config=1','Quay lại','soft')}`),'sim'));
+      }
+
       const n = await codesimGetNumber({ apiKey:s.codeSimApiKey, serviceId:s.codeSimServiceId, networkId:s.codeSimNetworkId, phone:s.codeSimPhone });
-      if(n.ok){
+      if (n.ok) {
         setClientActive(s, clientId, [{id:n.id, otpId:n.otpId, simId:n.simId, number:n.number, service:n.serviceUsed||s.codeSimServiceId, serviceName:n.serviceName||'', networkId:n.networkId||s.codeSimNetworkId||'', provider:'codesim', clientId, createdAt:new Date().toISOString(), cost:n.cost||''}]);
         writeDomainSim(req,s);
+        finishRent();
         return res.redirect('/thue-otp-sim?rented=1');
       }
+
+      finishRent();
       return res.send(layout('Không thuê được số', card('⚠️ Kết quả API', `<div class="big-result">${esc(n.message || n.raw)}</div><small class="muted">${esc(typeof n.raw === 'string' ? n.raw : JSON.stringify(n.raw || ''))}</small>${btn('/thue-otp-sim','Quay lại','soft')}`),'sim'));
-    }catch(e){ return res.send(layout('Lỗi thuê số', card('Lỗi',esc(e.message)),'sim')); }
-  }
-  if(!s.apiKey) return res.redirect('/thue-otp-sim?config=1');
-  try{
+    }
+
+    if (!s.apiKey) {
+      finishRent();
+      return res.redirect('/thue-otp-sim?config=1');
+    }
+
     const n = await grizzlyGetNumber({ apiKey:s.apiKey, service:s.service, country:s.country });
-    if(n.ok){
+    if (n.ok) {
       setClientActive(s, clientId, [{id:n.id, number:n.number, service:n.serviceUsed||s.service, country:n.countryUsed||s.country, provider:'grizzly', clientId, createdAt:new Date().toISOString(), cost:n.cost||'', countryCode:n.countryCode||''}]);
       writeDomainSim(req,s);
+      finishRent();
       return res.redirect('/thue-otp-sim?rented=1');
     }
-    res.send(layout('Không thuê được số', card('⚠️ Kết quả API', `<div class="big-result">${esc(n.message || n.raw)}</div><small class="muted">${esc(typeof n.raw === 'string' ? n.raw : JSON.stringify(n.raw || ''))}</small>${btn('/thue-otp-sim','Quay lại','soft')}`),'sim'));
-  }catch(e){res.send(layout('Lỗi thuê số', card('Lỗi',esc(e.message)),'sim'));}
+
+    finishRent();
+    return res.send(layout('Không thuê được số', card('⚠️ Kết quả API', `<div class="big-result">${esc(n.message || n.raw)}</div><small class="muted">${esc(typeof n.raw === 'string' ? n.raw : JSON.stringify(n.raw || ''))}</small>${btn('/thue-otp-sim','Quay lại','soft')}`),'sim'));
+  } catch(e) {
+    finishRent();
+    const msg = e && e.name === 'AbortError'
+      ? 'TIMEOUT: API thuê số phản hồi quá lâu, web đã tự ngắt để tránh Render 502. Hãy thử lại sau vài giây.'
+      : (e && e.message) || String(e);
+    return res.send(layout('Lỗi thuê số', card('Lỗi', esc(msg)),'sim'));
+  }
 });
 app.get('/api/sim/status/:id', async (req,res)=>{
   const s=normalizeSimStore(req);

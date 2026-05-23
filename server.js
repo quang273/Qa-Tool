@@ -1927,14 +1927,11 @@ async function grizzlyGetNumberOnce({ apiKey, service, country }){
 }
 function getTikTokServiceFallbacks(service){
   const s = String(service || '').trim().toLowerCase();
-  // v83: nếu Grizzly trả BAD_ACTION/NO_NUMBERS với tk, vẫn thử lf và vài mã TikTok hay gặp.
-  // Không tự thử dịch vụ ngoài TikTok để tránh thuê nhầm.
+  // v91: đã test trực tiếp Grizzly và xác nhận TikTok thuê được bằng service=lf.
+  // Không tự nhảy tk/tt nữa để tránh thuê sai/lag. Quốc gia vẫn lấy theo cấu hình người dùng chọn.
   const pool = [];
   const add = x => { x=String(x||'').trim().toLowerCase(); if (x && !pool.includes(x)) pool.push(x); };
   add(s || 'lf');
-  if (s === 'tk') add('lf');
-  if (s === 'lf') add('tk');
-  add('tt');
   return pool;
 }
 async function grizzlyGetNumber({ apiKey, service, country }){
@@ -1961,11 +1958,11 @@ async function grizzlyGetNumber({ apiKey, service, country }){
   const hasNoNumbers = /NO_NUMBERS/i.test(raw);
   const hasBadService = /BAD_SERVICE/i.test(raw);
   const message = hasBadAction
-    ? `BAD_ACTION: GrizzlySMS chưa nhận action/service/country hiện tại. Bản v83 đã thử getNumber + getNumberV2 và service fallback ${tried}. Nếu vẫn lỗi, mã service/quốc gia bên Grizzly đang không khớp hoặc API đang chập chờn; xem dòng chi tiết bên dưới.`
+    ? `BAD_ACTION: GrizzlySMS chưa nhận action/service/country hiện tại. Bản v91 dùng getNumber với service đã chọn (khuyến nghị TikTok=lf). Quốc gia vẫn theo cấu hình bạn chọn; nếu lỗi hãy đổi quốc gia hoặc kiểm tra API Grizzly.`
     : hasBadService
       ? `BAD_SERVICE: Mã dịch vụ chưa đúng. Đã thử service ${tried}. Hãy kiểm tra mã dịch vụ TikTok hiện tại trên GrizzlySMS.`
       : hasNoNumbers
-        ? `NO_NUMBERS: Quốc gia/dịch vụ này đang hết số hoặc tỉ lệ kho không ổn. Đã thử service ${tried}. Hãy đổi quốc gia.`
+        ? `NO_NUMBERS: Quốc gia/dịch vụ này đang hết số hoặc tỉ lệ kho không ổn. Service đang dùng ${tried}. Hãy đổi quốc gia hoặc nhà cung cấp.`
         : (firstResult && firstResult.message) || 'Không thuê được số.';
   return { ok:false, raw, message, attempts: allAttempts };
 }

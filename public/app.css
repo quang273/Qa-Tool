@@ -90,3 +90,9 @@ body{font-size:17px;font-weight:650}.hero h1{font-size:38px;font-weight:950}.eye
 .radio-row{display:flex;gap:12px;flex-wrap:wrap;margin:8px 0 12px}
 .radio-row label{display:flex;align-items:center;gap:8px;background:#f5f9ff;border:1px solid #dcecff;border-radius:14px;padding:10px 12px;font-weight:800;color:#23354d}
 .provider-config{margin-top:12px}
+
+
+/* V92: Android old touch compatibility */
+button,.btn,a,input,select,textarea{touch-action:manipulation;-webkit-tap-highlight-color:rgba(11,94,215,.18)}
+button,.btn,a{position:relative;z-index:2;pointer-events:auto}
+.copy-row button,.input-copy,.input-paste,.mini-copy,.row-copy{cursor:pointer}

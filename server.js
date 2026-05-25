@@ -580,13 +580,18 @@ function isAccountJunkPart(v){
   if (s.length > 80 || /^M\./i.test(s)) return true;
   return false;
 }
-function accountRenameName(parts){
+function accountUserFromParts(parts){
   parts = Array.isArray(parts) ? parts.map(x=>String(x||'').trim()).filter(Boolean) : splitAccountLine(parts);
   if (!parts.length) return '';
-  // Đổi tên ALL chỉ lấy USER, không lấy pass.
-  // Nếu dữ liệu 1 chỉ là số thứ tự thì bỏ qua và lấy dữ liệu 2 làm user.
-  const uIdx = (isPureNumber(parts[0]) && parts[1]) ? 1 : 0;
-  return parts[uIdx] || parts[0] || '';
+  // Quy tắc user chuẩn:
+  // - Nếu dữ liệu 1 chỉ là số thứ tự như 1, 21, 568 => user là dữ liệu 2.
+  // - Nếu không có số thứ tự => user là dữ liệu 1.
+  // Không lấy pass, không lấy secret 2FA, không lấy email.
+  return (isPureNumber(parts[0]) && parts[1]) ? parts[1] : parts[0];
+}
+function accountRenameName(parts){
+  // Đổi tên ALL chỉ lấy USER theo accountUserFromParts, không lấy pass.
+  return accountUserFromParts(parts);
 }
 function popFirstCurrentPick(req){
   const picks = readDomainObject(req, 'currentPicks');
@@ -693,8 +698,11 @@ function renderAccount(parts){
   const fields = shown.map((p,i)=>`<div class="field"><label>Dữ liệu ${i+1}</label><div class="copy-row"><input readonly value="${esc(p)}"><button class="mini-copy" onclick="copyValue(this)" title="Copy dòng này">📋</button></div></div>`).join('');
   const hidden = `<input type="hidden" id="accountRaw" value="${esc(parts.join('|'))}">`;
   const secret = get2faSecret(parts);
+  const userFor2fa = accountRenameName(parts);
+  const user2faText = (secret && userFor2fa) ? `${userFor2fa}|${String(secret || '').replace(/\s/g,'')}` : '';
+  const copyUser2fa = user2faText ? `<button class="btn soft wide" type="button" onclick="copyText('${esc(user2faText)}')">📋 Copy user|2FA</button>` : '';
   const otp = secret ? `<div class="otpbox"><div><b>OTP 2FA</b><small class="otp-remain">${remain()}s</small></div><div class="otpcode" data-secret="${esc(secret)}">${currentOtp(secret)}</div><button onclick="copyText(document.querySelector('.otpcode').textContent)">📋</button></div>` : '';
-  return `${hidden}${fields}${otp}<button class="btn primary wide" id="getCodeBtn">🔑 Get Code</button><div id="codeResult"></div>${btn('/Home/GetAccount','⬇️ Lấy tài khoản','soft')}`;
+  return `${hidden}${fields}${copyUser2fa}${otp}<button class="btn primary wide" id="getCodeBtn">🔑 Get Code</button><div id="codeResult"></div>${btn('/Home/GetAccount','⬇️ Lấy tài khoản','soft')}`;
 }
 
 function makePickId(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,10); }
@@ -719,9 +727,11 @@ app.get('/', (req,res)=>{
   const videos = read('videos');
   const links = read('links');
   const installUrl = (!settings.zaloUrl || String(settings.zaloUrl).includes('auraesoftware.com/zalo.jpg')) ? '/zalo.jpg' : settings.zaloUrl;
-  let body = `<div class="quick-grid"><a class="quick" href="${esc(installUrl)}" target="_blank">➕<span>Cài web mới</span></a><a class="quick" href="/Account/AddAccount">👤<span>Thêm tài khoản</span></a><a class="quick" href="/Settings">⚙️<span>Cài đặt</span></a><a class="quick danger" href="/Login/Logout">↪<span>Đăng xuất</span></a></div>`;
+  const quickActions = `<div class="quick-grid"><a class="quick" href="${esc(installUrl)}" target="_blank">➕<span>Cài web mới</span></a><a class="quick" href="/Account/AddAccount">👤<span>Thêm tài khoản</span></a><a class="quick" href="/Settings">⚙️<span>Cài đặt</span></a><a class="quick danger" href="/Login/Logout">↪<span>Đăng xuất</span></a></div>`;
+  let body = '';
   if (req.query.noAccount === '1') body += `<div class="notice warn">⚠️ Không còn tài khoản mới để lấy. Hãy thêm tài khoản mới trong mục Thêm tài khoản.</div>`;
   if (settings.showAccount) body += card('👤 Tài khoản', renderAccount(acc) + renderWithdrawalMail(settings));
+  body += quickActions;
   if (settings.showVideos) body += card('🎬 Xem video', `<div class="btn-grid">${btn('/Shortcut/TikTok60','▶ Video TikTok 60p')}${btn('/Shortcut/TikTok180','⏱️ Video TikTok 180p','soft')}${btn('/r/RandomTiktok10','▶ Video TikTok 10p','soft')}${btn('/Shortcut/TikTokLite60','▶ Video Lite 60p')}${btn('/Shortcut/TikTokLite180','⏱️ Video Lite 180p','soft')}${btn('/r/RandomTiktokLite10','▶ Video Lite 10p','soft')}${btn('/Video/AddVideo','➕ Thêm video','soft')}</div>`);
   if (settings.showEmail) body += card('✉️ Link nhanh', links.length ? `<div class="list">${links.slice(0,5).map(l=>`<a class="list-item" target="_blank" href="${esc(l)}">${esc(l)}</a>`).join('')}</div>${btn('/Link/AddLink','Thêm link','soft')}` : `<div class="empty">Chưa có link.</div>${btn('/Link/AddLink','Thêm link','soft')}`);
   if (settings.showIcloud) body += card('☁️ iCloud', `<div class="field"><label>Tài khoản iCloud</label><div class="copy-row"><input readonly value="${esc(settings.icloudEmail||'Chưa cài')}"><button onclick="copyValue(this)">📋</button></div></div><div class="field"><label>Mật khẩu iCloud</label><div class="copy-row"><input readonly value="${esc(settings.icloudPassword||'')}"><button onclick="copyValue(this)">📋</button></div></div>`);

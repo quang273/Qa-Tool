@@ -255,7 +255,27 @@ function splitAccountLine(line){
     .map(s => s.trim())
     .filter(Boolean);
 }
-function is2faSecret(s){ const v=String(s||'').replace(/\s/g,'').trim(); return /^[A-Z0-9]{16,}$/i.test(v) || (v.length>=16 && /^[A-Za-z0-9]+$/.test(v)); }
+function is2faSecret(s){
+  const v=String(s||'').replace(/\s/g,'').trim();
+  // Secret 2FA dạng Base32 thường dài >=16 ký tự, chỉ gồm A-Z/2-7; vẫn nới nhẹ để hỗ trợ dữ liệu cũ.
+  return /^[A-Z2-7]{16,}$/i.test(v) || (v.length>=24 && /^[A-Za-z0-9]+$/.test(v));
+}
+function pickUserFromParts(parts, secretIndex){
+  parts = Array.isArray(parts) ? parts.map(x=>String(x||'').trim()).filter(Boolean) : [];
+  if (!parts.length) return '';
+  // Bỏ STT đầu dòng như: 21|user|pass|secret
+  const start = (/^\d+$/.test(parts[0]||'') && parts[1]) ? 1 : 0;
+  for (let i=start; i<parts.length; i++) {
+    const v = parts[i];
+    if (i === secretIndex) continue;
+    if (!v || is2faSecret(v)) continue;
+    if (v.startsWith('@')) continue;
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) continue;
+    // Pass thường có ký tự đặc biệt, ví dụ Qu12345@, nên ưu tiên user chữ/số gọn.
+    if (/^[A-Za-z][A-Za-z0-9._-]{2,}$/.test(v)) return v;
+  }
+  return parts[start] || parts[0] || '';
+}
 function parseUser2faLoose(raw){
   const parts = String(raw||'').trim().includes('|')
     ? String(raw||'').split('|').map(x=>x.trim()).filter(Boolean)
@@ -264,15 +284,16 @@ function parseUser2faLoose(raw){
   const secretIndex = parts.findIndex(is2faSecret);
   if (secretIndex >= 0) {
     const secret = String(parts[secretIndex] || '').replace(/\s/g,'').toUpperCase();
-    const user = parts.find((x,i)=>i !== secretIndex && !is2faSecret(x)) || '';
+    const user = pickUserFromParts(parts, secretIndex);
     return { user, secret };
   }
-  return { user: parts[0] || '', secret: parts[1] || '' };
+  const uIdx = (/^\d+$/.test(parts[0]||'') && parts[1]) ? 1 : 0;
+  return { user: parts[uIdx] || parts[0] || '', secret: parts[uIdx+1] || '' };
 }
 function get2faSecret(parts){
-  if (parts.length === 2 && is2faSecret(parts[1])) return parts[1];
-  if (parts.length === 3 && is2faSecret(parts[2])) return parts[2];
-  return '';
+  parts = Array.isArray(parts) ? parts : [];
+  const hit = parts.find(is2faSecret);
+  return hit ? String(hit).replace(/\s/g,'').toUpperCase() : '';
 }
 function isGmailMail(p){ return isEmailPart(p) && /@(gmail|googlemail)\./i.test(String(p||'')); }
 function isMailFakeCandidate(p){ return isEmailPart(p) && !isMicrosoftMail(p) && !isGmailMail(p); }
@@ -598,7 +619,8 @@ function userToolBox(parts){
   const quickUser = shown[idx] || shown[0] || '';
   const type = classify(parts);
   const secret = get2faSecret(parts);
-  const user2fa = (type === '2fa' && parts[0] && secret) ? `${parts[0]}|${secret}` : '';
+  const userFor2fa = pickUserFromParts(parts, parts.findIndex(is2faSecret));
+  const user2fa = (type === '2fa' && userFor2fa && secret) ? `${userFor2fa}|${secret}` : '';
   const options = shown.map((p,i)=>`<option value="${esc(p)}" ${i===idx?'selected':''}>Dữ liệu ${i+1}: ${esc(p)}</option>`).join('');
   return `<section class="send-tool-box">
     <h3>📲 Gửi sang iPhone Tool</h3>
